@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# Generated videos and visual verification artifacts
+*.mp4
+*.mov
+verification*.png
+
+# Local editable project data
+流程圖動畫專案*.json
+
+# Local one-time publishing helper
+.codex-upload-github.ps1
