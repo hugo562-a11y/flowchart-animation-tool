@@ -27,7 +27,7 @@ const defaultState = () => ({
   timelineOrder: [], selectedTimelineItems: []
 });
 let state = defaultState();
-let undoStack = [], redoStack = [], drag = null, linkMode = false, linkSourceId = null, linkPreview = null, selectionRect = null, timelineSelection = null, selectedControlPoint = null, spacePressed = false, playStartedAt = 0, playBase = 0, toastTimer;
+let undoStack = [], redoStack = [], drag = null, linkMode = false, linkSourceId = null, linkPreview = null, selectionRect = null, timelineSelection = null, selectedControlPoint = null, spacePressed = false, playStartedAt = 0, playBase = 0, toastTimer, uiResizeFrame;
 const STORAGE_KEY = "flow-animation-editor-v1";
 const LAYOUT_STORAGE_KEY = "flow-animation-editor-layout-v1";
 const TIMELINE_PX_PER_SECOND = 90;
@@ -512,8 +512,19 @@ function applyNodeShape(shape) {
     if (shape === "circle") { const size = Math.max(node.width, node.height); node.width = size; node.height = size; }
   });
 }
+function constrainUiSizes() {
+  const defaults = defaultState().ui, width = document.documentElement.clientWidth, height = document.documentElement.clientHeight;
+  state.ui = { ...defaults, ...(state.ui || {}) };
+  const compact = width < 800, leftMin = compact ? 140 : 190, rightMin = compact ? 150 : 220, centerMin = compact ? 220 : 360;
+  const panelBudget = Math.max(leftMin + rightMin, width - centerMin - 12);
+  state.ui.leftWidth = clamp(Number(state.ui.leftWidth) || defaults.leftWidth, leftMin, Math.min(520, panelBudget - rightMin));
+  state.ui.rightWidth = clamp(Number(state.ui.rightWidth) || defaults.rightWidth, rightMin, Math.min(560, panelBudget - state.ui.leftWidth));
+  if (state.ui.leftWidth + state.ui.rightWidth > panelBudget) state.ui.leftWidth = Math.max(leftMin, panelBudget - state.ui.rightWidth);
+  const topbarHeight = document.querySelector(".topbar")?.offsetHeight || 48;
+  state.ui.timelineHeight = clamp(Number(state.ui.timelineHeight) || defaults.timelineHeight, 110, Math.max(110, Math.min(600, height - topbarHeight - 180)));
+}
 function applyUiSizes() {
-  state.ui ||= { leftWidth: 270, rightWidth: 270, timelineHeight: 225 };
+  constrainUiSizes();
   document.documentElement.style.setProperty("--left-panel-width", `${state.ui.leftWidth}px`);
   document.documentElement.style.setProperty("--right-panel-width", `${state.ui.rightWidth}px`);
   document.documentElement.style.setProperty("--timeline-height", `${state.ui.timelineHeight}px`);
@@ -521,9 +532,9 @@ function applyUiSizes() {
 function startPanelResize(kind, e) {
   e.preventDefault(); const startX = e.clientX, startY = e.clientY, original = clone(state.ui);
   const move = (event) => {
-    if (kind === "left") state.ui.leftWidth = clamp(original.leftWidth + event.clientX - startX, 190, 520);
-    if (kind === "right") state.ui.rightWidth = clamp(original.rightWidth - event.clientX + startX, 220, 560);
-    if (kind === "timeline") state.ui.timelineHeight = clamp(original.timelineHeight - event.clientY + startY, 130, Math.min(600, innerHeight - 220));
+    if (kind === "left") state.ui.leftWidth = clamp(original.leftWidth + event.clientX - startX, 140, 520);
+    if (kind === "right") state.ui.rightWidth = clamp(original.rightWidth - event.clientX + startX, 150, 560);
+    if (kind === "timeline") state.ui.timelineHeight = clamp(original.timelineHeight - event.clientY + startY, 110, Math.min(600, innerHeight - 180));
     applyUiSizes();
     if (kind === "timeline") requestAnimationFrame(() => { fitCanvasToViewport(); renderCanvas(); renderBackgroundInputs(); });
   };
@@ -532,7 +543,7 @@ function startPanelResize(kind, e) {
 }
 function fitCanvasToViewport(allowGrow = false) {
   const viewport = $("canvasViewport"), fitted = Math.min((viewport.clientWidth - 45) / state.canvas.width, (viewport.clientHeight - 45) / state.canvas.height);
-  state.zoom = clamp(allowGrow ? fitted : Math.min(state.zoom, fitted), 0.2, 1.6);
+  state.zoom = clamp(allowGrow ? fitted : Math.min(state.zoom, fitted), 0.05, 1.6);
 }
 function timelinePlayheadLeft() {
   const timeline = $("timeline"), lane = timeline.querySelector(".track-lane"); if (!lane) return 162;
@@ -836,6 +847,11 @@ window.addEventListener("keydown", (e) => {
 });
 window.addEventListener("keyup", (e) => { if (e.code === "Space") { spacePressed = false; document.body.classList.remove("space-pan"); } });
 window.addEventListener("blur", () => { spacePressed = false; document.body.classList.remove("space-pan"); });
+window.addEventListener("resize", () => {
+  cancelAnimationFrame(uiResizeFrame);
+  uiResizeFrame = requestAnimationFrame(() => { applyUiSizes(); fitCanvasToViewport(); renderCanvas(); renderBackgroundInputs(); renderTimelinePlayhead(); });
+});
 try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) state = JSON.parse(saved); } catch (_) {}
 populateFonts(); upgradeState();
 renderAll();
+requestAnimationFrame(() => { fitCanvasToViewport(); renderCanvas(); renderBackgroundInputs(); });

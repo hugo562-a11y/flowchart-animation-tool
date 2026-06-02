@@ -83,11 +83,13 @@
         <button id="alignBottomBtn">靠下</button>
         <button id="distributeHBtn">水平均分</button>
         <button id="distributeVBtn">垂直均分</button>
-        <label>縮放 <input id="zoomRange" type="range" min="20" max="160" value="55"> <span id="zoomLabel">55%</span></label>
+        <label>縮放 <input id="zoomRange" type="range" min="5" max="160" value="55"> <span id="zoomLabel">55%</span></label>
         <span id="canvasHint" class="muted">空白拖曳框選；Space + 左鍵平移；滾輪縮放；Shift 加選；Ctrl 減選。</span>
       </div>
       <div id="canvasViewport" class="canvas-viewport">
-        <svg id="canvasSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="canvas-stage">
+          <svg id="canvasSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
       </div>
     </section>
     <div id="rightSplitter" class="vertical-splitter" title="拖曳調整右側屬性區寬度"></div>
