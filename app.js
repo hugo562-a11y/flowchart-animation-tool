@@ -27,7 +27,7 @@ const defaultState = () => ({
   timelineOrder: [], selectedTimelineItems: []
 });
 let state = defaultState();
-let undoStack = [], redoStack = [], drag = null, linkMode = false, linkSourceId = null, linkPreview = null, selectionRect = null, timelineSelection = null, selectedControlPoint = null, spacePressed = false, playStartedAt = 0, playBase = 0, toastTimer, uiResizeFrame;
+let undoStack = [], redoStack = [], drag = null, linkMode = false, linkSourceId = null, linkPreview = null, selectionRect = null, timelineSelection = null, selectedControlPoint = null, spacePressed = false, playStartedAt = 0, playBase = 0, toastTimer, uiResizeFrame, exportingVideo = false;
 const STORAGE_KEY = "flow-animation-editor-v1";
 const LAYOUT_STORAGE_KEY = "flow-animation-editor-layout-v1";
 const TIMELINE_PX_PER_SECOND = 90;
@@ -768,36 +768,62 @@ async function exportPngSequence() {
   state.playhead = previous; renderAll(); showToast(`PNG 序列輸出完成，共 ${files.length} 張。`);
 }
 async function downloadResolveMov(blob, fps) {
+  const healthController = new AbortController(), healthTimer = setTimeout(() => healthController.abort(), 2500);
+  try {
+    const health = await fetch("/api/health", { cache: "no-store", signal: healthController.signal });
+    if (!health.ok) throw new Error("Resolve 轉檔服務未啟動");
+  } finally {
+    clearTimeout(healthTimer);
+  }
   showToast("正在使用 FFmpeg 轉換 Resolve 相容 MOV，請勿關閉頁面。");
   const response = await fetch(`/api/resolve-export?fps=${fps}`, { method: "POST", headers: { "Content-Type": blob.type || "application/octet-stream" }, body: blob });
   if (!response.ok) throw new Error(`Resolve MOV 轉換失敗：${response.status}`);
   download("流程圖動畫-Resolve相容.mov", await response.blob());
 }
 async function exportVideo() {
-  const fps = clamp(Number($("fps").value) || 30, 1, 60), previous = state.playhead, total = totalDuration(), canvas = document.createElement("canvas");
-  canvas.width = state.canvas.width; canvas.height = state.canvas.height;
-  const ctx = canvas.getContext("2d"), stream = canvas.captureStream(fps);
-  const allowMp4 = state.canvas.backgroundType !== "transparent", mp4 = allowMp4 && MediaRecorder.isTypeSupported("video/mp4;codecs=avc1") ? "video/mp4;codecs=avc1" : allowMp4 && MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "";
-  const mimeType = mp4 || "video/webm;codecs=vp9", chunks = [], recorder = new MediaRecorder(stream, { mimeType });
-  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  recorder.onstop = async () => {
+  if (exportingVideo) return showToast("影片仍在輸出中，請稍候。");
+  if (!globalThis.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) return showToast("此瀏覽器不支援影片輸出，請改用 Edge 或 Chrome。");
+  exportingVideo = true;
+  const button = $("exportVideoBtn"), originalButtonText = button.textContent, fps = clamp(Number($("fps").value) || 30, 1, 60), previous = state.playhead, total = totalDuration(), canvas = document.createElement("canvas");
+  let stream;
+  button.disabled = true;
+  try {
+    canvas.width = state.canvas.width; canvas.height = state.canvas.height;
+    const ctx = canvas.getContext("2d"); stream = canvas.captureStream(fps);
+    const allowMp4 = state.canvas.backgroundType !== "transparent", mp4 = allowMp4 && MediaRecorder.isTypeSupported("video/mp4;codecs=avc1") ? "video/mp4;codecs=avc1" : allowMp4 && MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "";
+    const mimeType = mp4 || "video/webm;codecs=vp9", chunks = [], recorder = new MediaRecorder(stream, { mimeType });
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    recorder.onerror = () => showToast("影片錄製器發生錯誤。");
+    recorder.start(1000);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    showToast("正在輸出影片，請勿關閉頁面。");
+    const frames = Math.ceil(total * fps);
+    for (let i = 0; i <= frames; i++) {
+      state.playhead = i / fps; renderCanvas(); const source = await canvasFromSvg(); ctx.save(); ctx.clearRect(0, 0, canvas.width, canvas.height); if (state.canvas.backgroundType !== "transparent") { ctx.fillStyle = state.canvas.color1; ctx.fillRect(0, 0, canvas.width, canvas.height); } ctx.drawImage(source, 0, 0); ctx.restore();
+      if (i % Math.max(1, fps) === 0 || i === frames) { button.textContent = `輸出中 ${Math.round(i / Math.max(1, frames) * 100)}%`; showToast(`正在輸出影片：${i + 1} / ${frames + 1} 格`); }
+      await new Promise((resolve) => setTimeout(resolve, 1000 / fps));
+    }
+    button.textContent = "正在完成輸出";
+    showToast("正在完成影片尾端，請稍候。");
+    await new Promise((resolve) => setTimeout(resolve, Math.max(500, 1000 / fps * 3)));
+    recorder.requestData();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await new Promise((resolve, reject) => { recorder.onerror = () => reject(recorder.error || new Error("影片錄製失敗")); recorder.onstop = resolve; recorder.stop(); });
     const ext = mp4 ? "mp4" : "webm", blob = new Blob(chunks, { type: mimeType });
     try {
       await downloadResolveMov(blob, fps);
       showToast("Resolve 相容 MOV 輸出完成。");
     } catch (_) {
       download(`流程圖動畫-原始.${ext}`, blob);
-      showToast("無法自動轉換，已下載原始影片。請使用 start.ps1 開啟工具。");
+      showToast(`無法自動轉換，已下載瀏覽器版 ${ext.toUpperCase()}。`);
     }
+  } catch (error) {
+    showToast(`影片輸出失敗：${error.message}`);
+  } finally {
+    stream?.getTracks().forEach((track) => track.stop());
+    button.disabled = false; button.textContent = originalButtonText; exportingVideo = false;
     state.playhead = previous; renderAll();
-  };
-  recorder.start(); showToast("正在輸出影片，請勿關閉頁面。");
-  const frames = Math.ceil(total * fps);
-  for (let i = 0; i <= frames; i++) {
-    state.playhead = i / fps; renderCanvas(); const source = await canvasFromSvg(); ctx.save(); ctx.clearRect(0, 0, canvas.width, canvas.height); if (state.canvas.backgroundType !== "transparent") { ctx.fillStyle = state.canvas.color1; ctx.fillRect(0, 0, canvas.width, canvas.height); } ctx.drawImage(source, 0, 0); ctx.restore();
-    await new Promise((resolve) => setTimeout(resolve, 1000 / fps));
   }
-  recorder.stop();
 }
 
 $("autoLayoutBtn").onclick = () => autoLayout(true); $("undoBtn").onclick = undo; $("redoBtn").onclick = redo;
