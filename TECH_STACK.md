@@ -115,8 +115,9 @@
 ### 啟動方式
 | 方式 | 需要 | 功能限制 |
 |---|---|---|
+| 雙擊 `launch.bat` | Python、Chrome/Edge | 全功能（推薦） |
 | 直接開 `index.html` | 瀏覽器 | 無字型掃描、無影片輸出、無 MP3 下載 |
-| 執行 `start.ps1` | Python、Chrome/Edge | 全功能 |
+| 執行 `start.ps1` | Python、Chrome/Edge、PowerShell 執行原則 | 全功能（備用） |
 | `run_spacemouse_flow_bridge.bat` | Python、SpaceMouse | 六軸輸入 |
 
 ---

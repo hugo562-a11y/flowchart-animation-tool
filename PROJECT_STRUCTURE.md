@@ -11,7 +11,9 @@
 ├── parser.js                     # FlowParser：縮排文字 → 節點資料
 ├── installed-fonts.js            # Windows 已安裝字型清單（由 start.ps1 產生）
 │
-├── start.ps1                     # 啟動腳本：掃字型、啟動 Python 伺服器、開瀏覽器
+├── launch.bat                    # 主啟動器（雙擊執行，不需 PowerShell）
+├── launch.py                     # 啟動邏輯：掃字型、安裝套件、啟伺服器、開瀏覽器
+├── start.ps1                     # 舊版啟動腳本（PowerShell，備用）
 ├── resolve_export_server.py      # 本機 HTTP 伺服器（FFmpeg 轉檔、Whisper 辨識）
 ├── spacemouse_flow_bridge.py     # SpaceMouse HID → WebSocket 橋接（Windows）
 ├── run_spacemouse_flow_bridge.bat # 啟動 SpaceMouse 橋接器
@@ -113,14 +115,17 @@ Windows 專用的 HID 橋接器，Port 8766（WebSocket）。
 3. 解析 3Dconnexion HID 封包（Usage Page 0x01，Usage 0x08）
 4. 將六軸資料（tx/ty/tz/rx/ry/rz）和按鈕狀態，透過 WebSocket 廣播給瀏覽器
 
-### `start.ps1`
-啟動腳本，執行順序：
-1. 掃描 Windows Registry 讀取已安裝字型名稱
-2. 寫入 `installed-fonts.js`（覆蓋上次的靜態清單）
-3. 檢查 Python 伺服器是否已在執行（`/api/health`）
-4. 若未執行則以 Hidden 模式啟動 `resolve_export_server.py`
-5. 等待伺服器就緒（最多 30 × 150ms）
-6. 以 `--app=` 模式開啟 Chrome（優先）或 Edge
+### `launch.bat` + `launch.py`
+主要啟動方式（雙擊 `launch.bat` 即可）。`.bat` 確認 Python 存在後呼叫 `launch.py`，執行順序：
+1. 掃描 Windows Registry（`winreg` 標準庫）讀取已安裝字型，寫入 `installed-fonts.js`
+2. `pip install --dry-run` 檢查缺少套件，若有則自動安裝
+3. 確認 FFmpeg 是否在 PATH 中（僅警告，不阻止啟動）
+4. 若 `/api/health` 未回應則以無視窗模式啟動 `resolve_export_server.py`
+5. 等待伺服器就緒（最多 40 × 150ms）
+6. 以 `--app=` 模式開啟 Chrome（優先）或 Edge，找不到則開預設瀏覽器
+
+### `start.ps1`（舊版，備用）
+PowerShell 啟動腳本，功能與 `launch.py` 相同，保留供 PowerShell 環境使用。
 
 ---
 
