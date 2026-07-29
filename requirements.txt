@@ -1,0 +1,8 @@
+# 流程圖動畫工具 - Python 套件需求
+#
+# 核心伺服器（resolve_export_server.py）僅使用標準庫，不需安裝任何套件。
+# 以下為可選功能的依賴套件：
+
+# 語音辨識（錄音後自動轉字幕）
+# 需要 FFmpeg 已安裝並在 PATH 中
+faster-whisper
