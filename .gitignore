@@ -8,3 +8,7 @@ verification*.png
 
 # Local editable project data
 流程圖動畫專案*.json
+
+# Local test and backup directories
+.edge-headless-test*/
+backup-*/

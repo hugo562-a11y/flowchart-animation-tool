@@ -9,12 +9,31 @@
 <body>
   <header class="topbar">
     <div class="brand">流程圖動畫工具</div>
-    <button id="newBtn">新專案</button>
-    <label class="button">匯入文字<input id="textFile" type="file" accept=".txt,text/plain"></label>
-    <label class="button">開啟專案<input id="projectFile" type="file" accept=".json,application/json"></label>
-    <button id="saveBtn">另存專案</button>
-    <button id="saveLayoutBtn">儲存版面</button>
-    <button id="loadLayoutBtn">載入版面</button>
+
+    <div class="dropdown">
+      <button class="dropdown-toggle">檔案 ▾</button>
+      <div class="dropdown-menu">
+        <button id="newBtn">新專案</button>
+        <hr>
+        <label class="button">匯入文字<input id="textFile" type="file" accept=".txt,text/plain"></label>
+        <label class="button">開啟專案<input id="projectFile" type="file" accept=".json,application/json"></label>
+        <hr>
+        <button id="saveBtn">另存專案</button>
+        <hr>
+        <button id="saveLayoutBtn">儲存版面</button>
+        <button id="loadLayoutBtn">載入版面</button>
+      </div>
+    </div>
+
+    <div class="dropdown">
+      <button class="dropdown-toggle">媒體 ▾</button>
+      <div class="dropdown-menu">
+        <label class="button">匯入音訊<input id="audioFile" type="file" accept="audio/*"></label>
+        <label class="button">匯入影片<input id="videoFile" type="file" accept="video/*"></label>
+        <button id="recordBtn">🎤 錄音</button>
+      </div>
+    </div>
+
     <span class="divider"></span>
     <button id="undoBtn" title="Ctrl+Z">復原</button>
     <button id="redoBtn" title="Ctrl+Y">重做</button>
@@ -57,9 +76,9 @@
             <option value="solid">純色</option>
             <option value="gradient">漸層</option>
             <option value="image">圖片</option>
-            <option value="transparent">透明</option>
           </select>
         </label>
+        <label class="inline"><input id="transparentBackground" type="checkbox"> 透明背景</label>
         <div class="row">
           <label>顏色 1<input id="backgroundColor1" type="color"></label>
           <label>顏色 2<input id="backgroundColor2" type="color"></label>
@@ -74,6 +93,7 @@
       <div class="canvas-toolbar">
         <button id="autoLayoutBtn">重新自動排版</button>
         <button id="fitBtn">符合視窗</button>
+        <button id="resetPanBtn">回正中</button>
         <span class="divider"></span>
         <button id="alignLeftBtn">靠左</button>
         <button id="alignCenterBtn">水平置中</button>
@@ -84,7 +104,7 @@
         <button id="distributeHBtn">水平均分</button>
         <button id="distributeVBtn">垂直均分</button>
         <label>縮放 <input id="zoomRange" type="range" min="5" max="160" value="55"> <span id="zoomLabel">55%</span></label>
-        <span id="canvasHint" class="muted">空白拖曳框選；Space + 左鍵平移；滾輪縮放；Shift 加選；Ctrl 減選。</span>
+        <span id="canvasHint" class="muted">空白拖曳框選；中鍵拖曳平移；滾輪縮放；Shift 加選；Ctrl 減選。</span>
       </div>
       <div id="canvasViewport" class="canvas-viewport">
         <div class="canvas-stage">
@@ -291,8 +311,9 @@
       <span id="timeLabel">0.00 / 0.00 秒</span>
       <span class="grow"></span>
       <label>FPS <input id="fps" type="number" min="1" max="60" value="30"></label>
-      <button id="exportVideoBtn">輸出 Resolve MOV</button>
-      <button id="exportPngBtn">輸出透明 PNG 序列 ZIP</button>
+      <button id="exportVideoBtn">輸出 MOV</button>
+      <button id="exportPngBtn">輸出序列</button>
+      <button id="exportMp4Btn">輸出 MP4</button>
     </div>
     <div id="timeline" class="timeline">
       <div id="timelinePlayhead" class="timeline-playhead"><span></span></div>
@@ -300,8 +321,63 @@
   </section>
 
   <div id="toast" class="toast hidden"></div>
+
+  <div id="recordModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2 id="recordModalTitle">🎤 錄音與語音辨識</h2>
+      <div class="modal-body">
+        <div class="rec-controls">
+          <label>麥克風
+            <select id="micSelect"><option value="">請選擇麥克風</option></select>
+          </label>
+          <button id="micRefreshBtn" type="button">重新偵測</button>
+          <div class="mic-status" id="micStatus">尚未偵測</div>
+          <div class="rec-buttons">
+            <button id="recStartBtn" class="primary">● 開始錄音</button>
+            <button id="recPauseBtn" class="hidden">⏸ 暫停</button>
+            <button id="recResumeBtn" class="hidden">▶ 繼續</button>
+            <button id="recStopBtn" class="hidden">■ 停止</button>
+          </div>
+          <div class="rec-timer" id="recTimer">00:00.0</div>
+        </div>
+        <div class="rec-volume">
+          <div class="volume-bar" id="volumeBar"><div class="volume-fill" id="volumeFill"></div></div>
+        </div>
+        <div class="rec-interim" id="recInterim"></div>
+        <div class="rec-subtitles">
+          <div class="rec-subtitles-header">
+            <span>已辨識字幕</span>
+            <button id="recTranscribeBtn" type="button">辨識錄音</button>
+            <button id="recSplitSentencesBtn" type="button">自動斷句</button>
+            <span class="muted">（點擊文字可編輯）</span>
+          </div>
+          <div class="rec-subtitles-list" id="recSubtitlesList"></div>
+        </div>
+        <div class="rec-preview hidden" id="recPreview">
+          <div class="preview-controls">
+            <button id="previewPlayBtn">▶ 播放</button>
+            <button id="previewPauseBtn" class="hidden">⏸ 暫停</button>
+            <span id="previewTime">0.00 / 0.00</span>
+            <input id="previewSeek" type="range" min="0" max="100" value="0">
+          </div>
+          <div class="trim-controls">
+            <label>剪輯開始 <input id="recTrimStart" type="number" min="0" step="0.01" value="0"></label>
+            <label>剪輯結束 <input id="recTrimEnd" type="number" min="0" step="0.01" value="0"></label>
+            <button id="trimToPreviewBtn" type="button">套用目前播放點</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="recCancelBtn">取消</button>
+        <button id="recDownloadBtn" disabled>下載錄音</button>
+        <button id="recConfirmBtn" class="primary" disabled>確認 ✓</button>
+      </div>
+    </div>
+  </div>
+
   <script src="installed-fonts.js"></script>
   <script src="parser.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

@@ -24,13 +24,14 @@ const defaultState = () => ({
   canvas: { width: 1920, height: 1080, backgroundType: "solid", color1: "#ffffff", color2: "#c9e7ff", image: "" },
   showNumbers: false, zoom: 0.55, playhead: 999, playing: false,
   ui: { leftWidth: 270, rightWidth: 270, timelineHeight: 225, canvasPanX: 0, canvasPanY: 0 },
-  timelineOrder: [], selectedTimelineItems: []
+  timelineOrder: [], selectedTimelineItems: [],
+  media: null, subtitles: []
 });
 let state = defaultState();
-let undoStack = [], redoStack = [], drag = null, linkMode = false, linkSourceId = null, linkPreview = null, selectionRect = null, timelineSelection = null, selectedControlPoint = null, spacePressed = false, playStartedAt = 0, playBase = 0, toastTimer, uiResizeFrame, exportingVideo = false;
+let undoStack = [], redoStack = [], drag = null, linkMode = false, linkSourceId = null, linkPreview = null, selectionRect = null, timelineSelection = null, selectedControlPoint = null, spacePressed = false, playStartedAt = 0, playBase = 0, shuttleSpeed = 0, toastTimer, uiResizeFrame, exportingVideo = false;
 const STORAGE_KEY = "flow-animation-editor-v1";
 const LAYOUT_STORAGE_KEY = "flow-animation-editor-layout-v1";
-const TIMELINE_PX_PER_SECOND = 90;
+let TIMELINE_PX_PER_SECOND = 90;
 const fallbackFonts = ["Microsoft JhengHei", "Microsoft JhengHei UI", "Arial", "Calibri", "Consolas", "Segoe UI", "Times New Roman", "Verdana"];
 
 function id(prefix) { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`; }
@@ -157,6 +158,9 @@ function upgradeState() {
   state.ui ||= { leftWidth: 270, rightWidth: 270, timelineHeight: 225, canvasPanX: 0, canvasPanY: 0 };
   state.ui.canvasPanX ||= 0; state.ui.canvasPanY ||= 0;
   state.selectedTimelineItems ||= [];
+  state.subtitles ||= [];
+  state.media ||= null;
+  if (state.media) { state.media.projectStart ||= 0; state.media.offset ||= 0; }
   state.nodes.forEach((node) => { if (!node.easing) node.easing = "easeInOut"; if (node.effect === "slide") node.effect = "slideLeft"; node.shape ||= "capsule"; node.fillMode ||= "gradient"; node.strokeMode ||= "solid"; node.stroke2 ||= node.stroke; });
   state.lines.forEach((line) => {
     if (!line.easing) line.easing = "easeInOut";
@@ -178,7 +182,10 @@ function upgradeState() {
   state.timelineOrder = [...previousOrder.filter((itemId) => currentIds.includes(itemId)), ...currentIds.filter((itemId) => !previousOrder.includes(itemId))];
 }
 function totalDuration() {
-  return Math.max(0.1, ...state.nodes.map((n) => n.start + n.duration), ...state.lines.map((l) => l.start + l.duration));
+  const base = Math.max(0.1, ...state.nodes.map((n) => n.start + n.duration), ...state.lines.map((l) => l.start + l.duration));
+  const mediaDuration = state.media?.duration || 0;
+  const subEnd = state.subtitles.length ? Math.max(...state.subtitles.map((s) => s.end)) : 0;
+  return Math.max(base, mediaDuration, subEnd);
 }
 function rawProgress(item) { return clamp((state.playhead - item.start) / item.duration, 0, 1); }
 function ease(value, type = "linear") {
@@ -373,8 +380,10 @@ function nodeAtPoint(p) {
   return [...state.nodes].reverse().find((node) => p.x >= node.x && p.x <= node.x + node.width && p.y >= node.y && p.y <= node.y + node.height);
 }
 function startCanvasInteraction(e) {
-  if (e.target !== $("canvasSvg") || linkMode || e.button !== 0) return;
-  if (spacePressed) startCanvasPan(e); else startCanvasSelection(e);
+  if (e.target !== $("canvasSvg") || linkMode) return;
+  if (e.button === 1) { startCanvasPan(e); return; }
+  if (e.button !== 0) return;
+  startCanvasSelection(e);
 }
 function startCanvasPan(e) {
   const viewport = $("canvasViewport"), svg = $("canvasSvg"), originX = e.clientX, originY = e.clientY, startX = state.ui.canvasPanX || 0, startY = state.ui.canvasPanY || 0;
@@ -463,19 +472,64 @@ function setValues(values) { Object.entries(values).forEach(([key, value]) => { 
 function renderTimeline() {
   const total = totalDuration(), currentTime = Math.min(state.playhead, total);
   $("playhead").max = total; $("playhead").value = currentTime; $("timeLabel").textContent = `${currentTime.toFixed(2)} / ${total.toFixed(2)} 秒`;
+  const extraTracks = [];
+  if (state.media) extraTracks.push({ id: "audio-track", type: "audio", label: "🔊 音訊", start: 0, duration: state.media.duration });
+  if (state.subtitles?.length) extraTracks.push({ id: "subtitle-track", type: "subtitle", label: "📝 字幕", start: 0, duration: total });
   const unsortedTracks = [
     ...state.nodes.map((n) => ({ label: `節點 ${n.number} ${n.text}`, type: "node", ...n })),
     ...state.lines.map((l) => ({ label: `線條 ${nodeById(l.from)?.number ?? "?"} → ${nodeById(l.to)?.number ?? "?"}`, type: "line", ...l }))
   ];
   const order = new Map((state.timelineOrder || []).map((itemId, index) => [itemId, index]));
-  const tracks = unsortedTracks.sort((a, b) => (order.get(a.id) ?? 9999) - (order.get(b.id) ?? 9999));
-  $("timeline").innerHTML = `<div id="timelinePlayhead" class="timeline-playhead"><span></span></div>` + tracks.map((t) => {
-    const selected = t.type === "node" ? state.selectedNodes.includes(t.id) : state.selectedLine === t.id;
-    const groupSelected = state.selectedTimelineItems.includes(t.id);
-    return `<div class="track ${t.type} ${selected ? "selected" : ""} ${groupSelected ? "layer-selected" : ""}" data-id="${t.id}" data-type="${t.type}"><div class="track-label" data-id="${t.id}" data-type="${t.type}"><span class="track-grip">⋮⋮</span><span class="track-name">${esc(t.label)}</span></div><div class="track-lane"><div class="track-clip ${groupSelected ? "group-selected" : ""}" data-type="${t.type}" data-id="${t.id}" style="left:calc(50% + ${(t.start - currentTime) * TIMELINE_PX_PER_SECOND}px);width:${Math.max(7, t.duration * TIMELINE_PX_PER_SECOND)}px"></div></div></div>`;
-  }).join("");
-  $("timeline").querySelectorAll(".track-clip").forEach((clip) => clip.addEventListener("pointerdown", startTimelineDrag));
-  $("timeline").querySelectorAll(".track-label").forEach((label) => label.addEventListener("pointerdown", startTrackReorder));
+  const tracks = [...extraTracks, ...unsortedTracks.sort((a, b) => (order.get(a.id) ?? 9999) - (order.get(b.id) ?? 9999))];
+  let html = `<div id="timelinePlayhead" class="timeline-playhead"><span></span></div>`;
+  tracks.forEach((t) => {
+    if (t.type === "audio") {
+      const m = state.media, ps = m?.projectStart || 0;
+      const durationPx = Math.max(7, t.duration * TIMELINE_PX_PER_SECOND);
+      html += `<div class="track audio" data-id="${t.id}"><div class="track-label"><span class="track-grip">⋮⋮</span><span class="track-name">${esc(t.label)}</span></div><div class="track-lane"><div class="track-clip" data-type="audio" data-id="${t.id}" style="left:calc(50% + ${(ps - currentTime) * TIMELINE_PX_PER_SECOND}px);width:${durationPx}px">`;
+      if (m?.waveform?.length) {
+        html += `<canvas class="audio-waveform" width="${Math.ceil(durationPx)}" height="30"></canvas>`;
+      }
+      html += `</div></div></div>`;
+    } else if (t.type === "subtitle") {
+      html += `<div class="track subtitle" data-id="${t.id}"><div class="track-label"><span class="track-grip">⋮⋮</span><span class="track-name">${esc(t.label)}</span></div><div class="track-lane" style="overflow:visible">`;
+      state.subtitles.forEach((sub) => {
+        const left = (sub.start - currentTime) * TIMELINE_PX_PER_SECOND + 50;
+        const width = Math.max(7, (sub.end - sub.start) * TIMELINE_PX_PER_SECOND);
+        html += `<div class="sub-segment" data-id="${sub.id}" style="left:calc(50% + ${(sub.start - currentTime) * TIMELINE_PX_PER_SECOND}px);width:${width}px"><span class="sub-seg-text">${esc(sub.text)}</span></div>`;
+      });
+      html += `</div></div>`;
+    } else {
+      const selected = t.type === "node" ? state.selectedNodes.includes(t.id) : state.selectedLine === t.id;
+      const groupSelected = state.selectedTimelineItems.includes(t.id);
+      html += `<div class="track ${t.type} ${selected ? "selected" : ""} ${groupSelected ? "layer-selected" : ""}" data-id="${t.id}" data-type="${t.type}"><div class="track-label" data-id="${t.id}" data-type="${t.type}"><span class="track-grip">⋮⋮</span><span class="track-name">${esc(t.label)}</span></div><div class="track-lane"><div class="track-clip ${groupSelected ? "group-selected" : ""}" data-type="${t.type}" data-id="${t.id}" style="left:calc(50% + ${(t.start - currentTime) * TIMELINE_PX_PER_SECOND}px);width:${Math.max(7, t.duration * TIMELINE_PX_PER_SECOND)}px"></div></div></div>`;
+    }
+  });
+  $("timeline").innerHTML = html;
+  // Draw waveform on canvas
+  $("timeline").querySelectorAll(".audio-waveform").forEach((canvas) => {
+    const wf = state.media?.waveform;
+    if (!wf?.length) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height, half = h / 2;
+    ctx.clearRect(0, 0, w, h);
+    const barCount = Math.min(wf.length, Math.floor(w));
+    const step = wf.length / barCount;
+    for (let i = 0; i < barCount; i++) {
+      const idx = Math.floor(i * step);
+      const barH = Math.max(2, wf[idx] * half);
+      ctx.fillStyle = "rgba(127,200,255,0.85)";
+      ctx.fillRect(i * (w / barCount), half - barH, Math.max(1, w / barCount), barH * 2);
+    }
+  });
+  $("timeline").querySelectorAll(".track-clip").forEach((clip) => {
+    if (clip.closest(".track")?.classList.contains("subtitle")) return;
+    clip.addEventListener("pointerdown", startTimelineDrag);
+  });
+  $("timeline").querySelectorAll(".track-label").forEach((label) => {
+    if (label.closest(".track")?.classList.contains("audio") || label.closest(".track")?.classList.contains("subtitle")) return;
+    label.addEventListener("pointerdown", startTrackReorder);
+  });
   $("timelinePlayhead").addEventListener("pointerdown", startPlayheadDrag);
   renderTimelineSelection();
   renderTimelinePlayhead();
@@ -563,9 +617,71 @@ function startPlayheadDrag(e) {
   const move = (event) => { state.playhead = clamp(originalTime + (event.clientX - originX) / TIMELINE_PX_PER_SECOND, 0, totalDuration()); renderCanvas(); renderTimeline(); };
   window.addEventListener("pointermove", move); window.addEventListener("pointerup", () => window.removeEventListener("pointermove", move), { once: true });
 }
-function nudgePlayhead(delta) { state.playing = false; $("playBtn").textContent = "播放"; state.playhead = clamp(Math.min(state.playhead, totalDuration()) + delta, 0, totalDuration()); renderCanvas(); renderTimeline(); }
+function nudgePlayhead(delta) { state.playing = false; $("playBtn").textContent = "播放"; state.playhead = clamp(Math.min(state.playhead, totalDuration()) + delta, 0, totalDuration()); if (state.media?.element) try { state.media.element.currentTime = audioTimeAtPlayhead(); } catch (_) {} renderCanvas(); renderTimeline(); }
 function timelineItem(type, itemId) { return type === "node" ? nodeById(itemId) : lineById(itemId); }
 function timelineItemById(itemId) { return nodeById(itemId) || lineById(itemId); }
+function getActiveTimelineItem() {
+  return state.selectedTimelineItems.length ? timelineItemById(state.selectedTimelineItems[0]) : state.selectedNodes.length ? nodeById(state.selectedNodes[0]) : state.selectedLine ? lineById(state.selectedLine) : null;
+}
+function orderedTimelineIds() {
+  const currentIds = [...state.nodes, ...state.lines].map((item) => item.id);
+  const ordered = [...(state.timelineOrder || []).filter((id) => currentIds.includes(id)), ...currentIds.filter((id) => !(state.timelineOrder || []).includes(id))];
+  return ordered;
+}
+function selectTimelineItemById(itemId) {
+  const node = nodeById(itemId), line = lineById(itemId);
+  if (!node && !line) return;
+  state.selectedTimelineItems = [itemId];
+  if (node) {
+    state.selectedNodes = [node.id];
+    state.selectedLine = null;
+    document.body.classList.remove("line-editing");
+    focusCanvasOnNode(node.id);
+  } else {
+    state.selectedNodes = [];
+    state.selectedLine = line.id;
+    selectedControlPoint = null;
+    document.body.classList.add("line-editing");
+  }
+  renderAll();
+}
+function selectRelativeTimelineLayer(delta) {
+  const ordered = orderedTimelineIds();
+  if (!ordered.length) return;
+  const current = state.selectedTimelineItems[0] || state.selectedNodes[0] || state.selectedLine || ordered[0];
+  const currentIndex = Math.max(0, ordered.indexOf(current));
+  const next = ordered[clamp(currentIndex + delta, 0, ordered.length - 1)];
+  selectTimelineItemById(next);
+}
+function selectedTimelineItems() {
+  const ids = state.selectedTimelineItems.length ? state.selectedTimelineItems : [state.selectedNodes[0], state.selectedLine].filter(Boolean);
+  return ids.map(timelineItemById).filter(Boolean);
+}
+function alignSelectedTimelineStartToPlayhead() {
+  const items = selectedTimelineItems();
+  if (!items.length) return;
+  commit(() => items.forEach((item) => { item.start = snapTime(state.playhead); }));
+}
+function alignSelectedTimelineEndToPlayhead() {
+  const items = selectedTimelineItems();
+  if (!items.length) return;
+  commit(() => items.forEach((item) => { item.start = snapTime(Math.max(0, state.playhead - item.duration)); }));
+}
+function movePlayheadToSelectedTimelineEdge(edge) {
+  const items = selectedTimelineItems();
+  if (!items.length) return;
+  const time = edge === "start" ? Math.min(...items.map((item) => item.start)) : Math.max(...items.map((item) => item.start + item.duration));
+  state.playhead = clamp(time, 0, totalDuration());
+  if (state.media?.element) try { state.media.element.currentTime = audioTimeAtPlayhead(); } catch (_) {}
+  renderCanvas(); renderTimeline();
+}
+function zoomTimelineAtWheel(event) {
+  if (!event.shiftKey) return;
+  event.preventDefault();
+  const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+  TIMELINE_PX_PER_SECOND = Math.round(clamp(TIMELINE_PX_PER_SECOND * factor, 24, 360));
+  renderTimeline();
+}
 function renderTimelineSelection() {
   $("timeline").querySelector(".timeline-selection")?.remove();
   if (!timelineSelection) return;
@@ -614,9 +730,17 @@ function startTrackReorder(e) {
 }
 function startTimelineDrag(e) {
   e.preventDefault(); e.stopPropagation();
-  const clip = e.currentTarget, item = timelineItem(clip.dataset.type, clip.dataset.id), lane = clip.parentElement, rect = clip.getBoundingClientRect();
-  pushUndo();
+  const clip = e.currentTarget, rect = clip.getBoundingClientRect();
   const edge = e.clientX - rect.left < 7 ? "resizeStart" : rect.right - e.clientX < 7 ? "resizeEnd" : "move";
+  pushUndo();
+  if (clip.dataset.type === "audio") {
+    const m = state.media;
+    drag = { kind: "timeline-audio", edge, originX: e.clientX, originalProjectStart: m.projectStart || 0, originalOffset: m.offset || 0, originalDuration: m.duration };
+    window.addEventListener("pointermove", onTimelineDrag); window.addEventListener("pointerup", endTimelineDrag, { once: true });
+    return;
+  }
+  const item = timelineItem(clip.dataset.type, clip.dataset.id);
+  if (!item) return;
   if (!state.selectedTimelineItems.includes(item.id)) state.selectedTimelineItems = [item.id];
   const items = edge === "move" ? state.selectedTimelineItems.map(timelineItemById).filter(Boolean).map((value) => ({ item: value, start: value.start })) : [{ item, start: item.start }];
   drag = { kind: "timeline", edge, item, items, minStart: Math.min(...items.map((value) => value.start)), originX: e.clientX, originalStart: item.start, originalDuration: item.duration };
@@ -624,8 +748,27 @@ function startTimelineDrag(e) {
   window.addEventListener("pointermove", onTimelineDrag); window.addEventListener("pointerup", endTimelineDrag, { once: true });
 }
 function snapTime(value) { return Math.max(0, Math.round(value * 10) / 10); }
+function audioTimeAtPlayhead() {
+  const m = state.media; if (!m) return 0;
+  return Math.max(0, state.playhead - (m.projectStart || 0) + (m.offset || 0));
+}
 function onTimelineDrag(e) {
-  if (!drag || drag.kind !== "timeline") return;
+  if (!drag) return;
+  if (drag.kind === "timeline-audio") {
+    const delta = (e.clientX - drag.originX) / TIMELINE_PX_PER_SECOND, minDur = 0.1, m = state.media;
+    if (drag.edge === "move") {
+      m.projectStart = Math.max(0, snapTime(drag.originalProjectStart + delta));
+    } else if (drag.edge === "resizeStart") {
+      const d = clamp(delta, -drag.originalProjectStart, drag.originalDuration - minDur);
+      m.projectStart = Math.max(0, snapTime(drag.originalProjectStart + d));
+      m.offset = Math.max(0, snapTime(drag.originalOffset + d));
+      m.duration = Math.max(minDur, snapTime(drag.originalDuration - d));
+    } else if (drag.edge === "resizeEnd") {
+      m.duration = Math.max(minDur, snapTime(drag.originalDuration + delta));
+    }
+    renderTimeline(); return;
+  }
+  if (drag.kind !== "timeline") return;
   const delta = (e.clientX - drag.originX) / TIMELINE_PX_PER_SECOND, minDuration = 0.1;
   if (drag.edge === "move") { const adjusted = Math.max(delta, -drag.minStart); drag.items.forEach((value) => value.item.start = snapTime(value.start + adjusted)); }
   if (drag.edge === "resizeStart") {
@@ -677,7 +820,7 @@ function addLine() {
   linkSourceId = null; linkPreview = null;
   $("addLineBtn").classList.toggle("primary", linkMode);
   document.body.classList.toggle("link-mode", linkMode);
-  $("canvasHint").textContent = linkMode ? "連接線模式：點來源節點，再點目標節點；也可直接拖拉。按按鈕退出。" : "空白拖曳框選；Space + 左鍵平移；滾輪縮放；Shift 加選；Ctrl 減選。";
+  $("canvasHint").textContent = linkMode ? "連接線模式：點來源節點，再點目標節點；也可直接拖拉。按按鈕退出。" : "空白拖曳框選；中鍵拖曳平移；滾輪縮放；Shift 加選；Ctrl 減選。";
   renderCanvas();
 }
 function addControlPoint() {
@@ -702,17 +845,67 @@ function deleteSelected() {
   });
 }
 function play() {
-  if (state.playing) { state.playing = false; $("playBtn").textContent = "播放"; return; }
+  if (state.playing) { state.playing = false; shuttleSpeed = 0; $("playBtn").textContent = "播放"; if (state.media?.element) state.media.element.pause(); return; }
   if (state.playhead >= totalDuration()) state.playhead = 0;
-  state.playing = true; playStartedAt = performance.now(); playBase = state.playhead; $("playBtn").textContent = "暫停"; requestAnimationFrame(tick);
+  state.playing = true; playStartedAt = performance.now(); playBase = state.playhead; shuttleSpeed = 0; $("playBtn").textContent = "暫停";
+  if (state.media?.src) {
+    if (!state.media.element || state.media.element.error) {
+      if (state.media.type === "audio") state.media.element = new Audio(state.media.src);
+      else { const v = document.createElement("video"); v.src = state.media.src; state.media.element = v; }
+      state.media.element.load();
+    }
+    const el = state.media.element;
+    el.currentTime = audioTimeAtPlayhead();
+    el.play().catch(() => {});
+  }
+  requestAnimationFrame(tick);
 }
 function tick(now) {
   if (!state.playing) return;
-  state.playhead = playBase + (now - playStartedAt) / 1000;
-  if (state.playhead >= totalDuration()) { state.playhead = totalDuration(); state.playing = false; $("playBtn").textContent = "播放"; }
+  const dt = (now - playStartedAt) / 1000;
+  if (shuttleSpeed !== 0) {
+    state.playhead += shuttleSpeed * dt;
+    if (state.media?.element && !state.media.element.paused) {
+      if (shuttleSpeed > 0) state.media.element.playbackRate = shuttleSpeed;
+      else state.media.element.pause();
+    }
+    if (state.playhead < 0 || state.playhead > totalDuration()) {
+      state.playhead = clamp(state.playhead, 0, totalDuration());
+      state.playing = false; shuttleSpeed = 0; $("playBtn").textContent = "播放";
+      if (state.media?.element) try { state.media.element.pause(); } catch (_) {}
+    }
+  } else {
+    state.playhead = playBase + dt;
+    if (state.media?.element) state.media.element.playbackRate = 1;
+    if (state.playhead >= totalDuration()) {
+      state.playhead = totalDuration(); state.playing = false; $("playBtn").textContent = "播放";
+      if (state.media?.element) try { state.media.element.pause(); } catch (_) {}
+    }
+  }
+  playStartedAt = now;
+  if (shuttleSpeed === 0) playBase = state.playhead;
   renderCanvas(); renderTimeline(); if (state.playing) requestAnimationFrame(tick);
 }
-function stop() { state.playing = false; state.playhead = 0; $("playBtn").textContent = "播放"; renderAll(); }
+function stop() { state.playing = false; shuttleSpeed = 0; state.playhead = 0; if (state.media?.element) try { state.media.element.pause(); state.media.element.currentTime = 0; } catch (_) {} $("playBtn").textContent = "播放"; renderAll(); }
+async function extractWaveform(blob, samples = 2000) {
+  try {
+    const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, samples, 44100);
+    const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const raw = buffer.getChannelData(0);
+    const step = Math.max(1, Math.floor(raw.length / samples));
+    const waveform = [];
+    for (let i = 0; i < samples; i++) {
+      const start = i * step;
+      const end = Math.min(start + step, raw.length);
+      let peak = 0;
+      for (let j = start; j < end; j++) peak = Math.max(peak, Math.abs(raw[j]));
+      waveform.push(peak);
+    }
+    const max = Math.max(...waveform, 0.01);
+    return waveform.map((v) => v / max);
+  } catch (_) { return []; }
+}
+function subtitleAtTime(time) { return state.subtitles.find((s) => time >= s.start && time < s.end); }
 function download(name, blob) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 function zipNumber(value, bytes) { const data = new Uint8Array(bytes); for (let i = 0; i < bytes; i++) data[i] = value >>> (i * 8) & 255; return data; }
 function zipConcat(parts) { const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0)); let offset = 0; parts.forEach((part) => { result.set(part, offset); offset += part.length; }); return result; }
@@ -837,19 +1030,58 @@ $("newBtn").onclick = () => {
   document.body.classList.remove("line-editing", "link-mode"); $("parseErrors").textContent = ""; $("textFile").value = ""; $("projectFile").value = ""; renderAll(); saveLocal(); showToast("已建立乾淨的新專案，請匯入文字檔。");
 };
 $("playBtn").onclick = play; $("stopBtn").onclick = stop; $("playheadLeftBtn").onclick = () => nudgePlayhead(-0.1); $("playheadRightBtn").onclick = () => nudgePlayhead(0.1); $("exportPngBtn").onclick = exportPngSequence; $("exportVideoBtn").onclick = exportVideo;
-$("playhead").oninput = (e) => { state.playhead = Number(e.target.value); renderCanvas(); renderTimeline(); };
+$("playhead").oninput = (e) => { state.playhead = Number(e.target.value); if (state.media?.element) try { state.media.element.currentTime = audioTimeAtPlayhead(); } catch (_) {} renderCanvas(); renderTimeline(); };
 $("timeline").addEventListener("pointerdown", (e) => { if (e.target === $("timeline") || e.target.classList.contains("track-lane")) startTimelineMarquee(e); });
 $("timeline").addEventListener("scroll", renderTimelinePlayhead);
+$("timeline").addEventListener("wheel", zoomTimelineAtWheel, { passive: false });
 $("canvasViewport").addEventListener("wheel", zoomCanvasAtPointer, { passive: false });
+$("canvasViewport").addEventListener("dblclick", (e) => {
+  if (e.target !== $("canvasSvg")) return;
+  state.ui.canvasPanX = 0; state.ui.canvasPanY = 0;
+  fitCanvasToViewport(false); renderCanvas(); saveLocal();
+});
 $("leftSplitter").addEventListener("pointerdown", (e) => startPanelResize("left", e)); $("rightSplitter").addEventListener("pointerdown", (e) => startPanelResize("right", e)); $("timelineSplitter").addEventListener("pointerdown", (e) => startPanelResize("timeline", e));
 $("showNumbers").onchange = (e) => commit(() => state.showNumbers = e.target.checked);
 $("zoomRange").oninput = (e) => { state.zoom = Number(e.target.value) / 100; renderAll(); };
 $("fitBtn").onclick = () => { fitCanvasToViewport(true); renderAll(); };
+$("resetPanBtn").onclick = () => { state.ui.canvasPanX = 0; state.ui.canvasPanY = 0; fitCanvasToViewport(false); renderCanvas(); saveLocal(); };
 $("canvasPreset").onchange = (e) => { if (e.target.value === "custom") return; const [width, height] = e.target.value.split("x").map(Number); commit(() => Object.assign(state.canvas, { width, height })); };
 bindLive("canvasWidth", (v) => state.canvas.width = Number(v)); bindLive("canvasHeight", (v) => state.canvas.height = Number(v));
 bindValue("backgroundType", (v) => state.canvas.backgroundType = v); bindValue("backgroundColor1", (v) => state.canvas.color1 = v); bindValue("backgroundColor2", (v) => state.canvas.color2 = v);
 $("backgroundImage").onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => commit(() => { state.canvas.image = reader.result; state.canvas.backgroundType = "image"; }); reader.readAsDataURL(file); };
 $("clearBackgroundImageBtn").onclick = () => commit(() => { state.canvas.image = ""; if (state.canvas.backgroundType === "image") state.canvas.backgroundType = "solid"; $("backgroundImage").value = ""; });
+$("audioFile").onchange = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const dataUrl = reader.result;
+    const audio = new Audio(dataUrl);
+    audio.onloadedmetadata = async () => {
+      const waveform = await extractWaveform(file);
+      commit(() => { state.media = { type: "audio", src: dataUrl, duration: audio.duration, element: audio, blob: file, waveform }; });
+      showToast(`已匯入音訊：${file.name}，長度 ${audio.duration.toFixed(2)} 秒`);
+      $("audioFile").value = ""; renderAll();
+    };
+    audio.onerror = () => showToast("音訊載入失敗");
+  };
+  reader.readAsDataURL(file);
+};
+$("videoFile").onchange = (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    const video = document.createElement("video");
+    video.src = dataUrl;
+    video.onloadedmetadata = () => {
+      commit(() => { state.media = { type: "video", src: dataUrl, duration: video.duration, element: video }; });
+      showToast(`已匯入影片：${file.name}，長度 ${video.duration.toFixed(2)} 秒`);
+      $("videoFile").value = ""; renderAll();
+    };
+    video.onerror = () => showToast("影片載入失敗");
+  };
+  reader.readAsDataURL(file);
+};
 bindNodeValue("nodeText", "text"); bindValue("nodeShape", applyNodeShape); bindNodeValue("nodeFillMode", "fillMode"); bindNodeValue("nodeFill1", "fill1"); bindNodeValue("nodeFill2", "fill2");
 bindNodeValue("nodeStrokeMode", "strokeMode"); bindNodeValue("nodeStroke", "stroke"); bindNodeValue("nodeStroke2", "stroke2"); bindNodeValue("nodeTextColor", "textColor"); bindNodeValue("nodeTextStroke", "textStroke"); bindNodeValue("nodeFont", "font");
 bindNodeValue("nodeEffect", "effect"); bindNodeValue("nodeEasing", "easing"); bindValue("nodeTemplate", applyTemplate);
@@ -863,13 +1095,44 @@ bindLive("lineMarkerSize", (value) => { const line = lineById(state.selectedLine
 bindLineValue("lineType", "type"); bindValue("lineArrow", (value) => { const line = lineById(state.selectedLine); if (!line) return; line.arrow = value; if (value === "start" && line.startMarker === "none") line.startMarker = "arrow"; if (value === "end" && line.endMarker === "none") line.endMarker = "arrow"; if (value === "both") { if (line.startMarker === "none") line.startMarker = "arrow"; if (line.endMarker === "none") line.endMarker = "arrow"; } }); bindLineValue("lineStartMarker", "startMarker"); bindLineValue("lineEndMarker", "endMarker"); bindLineValue("lineEffect", "effect"); bindLineValue("lineEasing", "easing");
 [["lineStart", "start"], ["lineDuration", "duration"]].forEach(([control, key]) => bindLive(control, (value) => { const line = lineById(state.selectedLine); if (line) line[key] = Number(value); }));
 window.addEventListener("keydown", (e) => {
+  const tag = document.activeElement?.tagName || "";
+  const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
-  if (e.key === "Delete" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) deleteSelected();
-  if (e.code === "Space" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) { e.preventDefault(); spacePressed = true; document.body.classList.add("space-pan"); }
-  if (e.key === "ArrowLeft" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { e.preventDefault(); nudgePlayhead(-0.1); }
-  if (e.key === "ArrowRight" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { e.preventDefault(); nudgePlayhead(0.1); }
+  if (e.key === "Delete" && !["INPUT", "TEXTAREA"].includes(tag)) deleteSelected();
   if (e.key === "Escape") { state.selectedNodes = []; state.selectedLine = null; linkMode = false; linkSourceId = null; linkPreview = null; $("addLineBtn").classList.remove("primary"); document.body.classList.remove("line-editing", "link-mode"); renderAll(); }
+  if (inInput) return;
+  if (e.code === "Space" && !e.repeat) { e.preventDefault(); spacePressed = false; document.body.classList.remove("space-pan"); play(); }
+  if (e.key === "ArrowLeft") { e.preventDefault(); nudgePlayhead(-0.1); }
+  if (e.key === "ArrowRight") { e.preventDefault(); nudgePlayhead(0.1); }
+  if ((e.ctrlKey || e.metaKey) && e.code === "ArrowUp") { e.preventDefault(); selectRelativeTimelineLayer(-1); }
+  if ((e.ctrlKey || e.metaKey) && e.code === "ArrowDown") { e.preventDefault(); selectRelativeTimelineLayer(1); }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "BracketLeft") { e.preventDefault(); alignSelectedTimelineStartToPlayhead(); }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "BracketRight") { e.preventDefault(); alignSelectedTimelineEndToPlayhead(); }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "KeyI") { e.preventDefault(); movePlayheadToSelectedTimelineEdge("start"); }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "KeyO") { e.preventDefault(); movePlayheadToSelectedTimelineEdge("end"); }
+  // JKL shuttle
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "KeyJ") {
+    e.preventDefault();
+    shuttleSpeed = shuttleSpeed <= 0 ? shuttleSpeed - 1 : -1;
+    state.playing = true; playStartedAt = performance.now();
+    if (state.media?.src && state.media.element?.paused) { state.media.element.play().catch(() => {}); }
+    if (shuttleSpeed < 0) $("playBtn").textContent = `⏪ ${Math.abs(shuttleSpeed)}x`;
+    requestAnimationFrame(tick);
+  }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "KeyK") {
+    e.preventDefault(); shuttleSpeed = 0;
+    state.playing = false; $("playBtn").textContent = "播放";
+    if (state.media?.element) { try { state.media.element.pause(); } catch (_) {} }
+  }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.code === "KeyL") {
+    e.preventDefault();
+    shuttleSpeed = shuttleSpeed >= 0 ? shuttleSpeed + 1 : 1;
+    state.playing = true; playStartedAt = performance.now();
+    if (state.media?.src && state.media.element?.paused) { state.media.element.play().catch(() => {}); }
+    if (shuttleSpeed > 0) $("playBtn").textContent = `⏩ ${shuttleSpeed}x`;
+    requestAnimationFrame(tick);
+  }
 });
 window.addEventListener("keyup", (e) => { if (e.code === "Space") { spacePressed = false; document.body.classList.remove("space-pan"); } });
 window.addEventListener("blur", () => { spacePressed = false; document.body.classList.remove("space-pan"); });
@@ -881,3 +1144,237 @@ try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) state = JSON.p
 populateFonts(); upgradeState();
 renderAll();
 requestAnimationFrame(() => { fitCanvasToViewport(); renderCanvas(); renderBackgroundInputs(); });
+
+// ── Recording modal ──────────────────────────────────────────────────────────
+let recStream = null, recMediaRecorder = null, recChunks = [], recBlob = null;
+let recTimerInterval = null, recStartedAt = 0, recPausedMs = 0, recPauseTs = 0;
+let recAudioCtx = null, recVolFrame = null, recPreviewAudio = null;
+
+function openRecordModal() {
+  $("recordModal").classList.remove("hidden");
+  refreshMics();
+}
+function closeRecordModal() {
+  stopRecordingNow();
+  if (recPreviewAudio) { recPreviewAudio.pause(); URL.revokeObjectURL(recPreviewAudio.src); recPreviewAudio = null; }
+  recBlob = null; recChunks = [];
+  $("recordModal").classList.add("hidden");
+  $("recStartBtn").classList.remove("hidden");
+  ["recPauseBtn", "recResumeBtn", "recStopBtn"].forEach((btnId) => $(btnId).classList.add("hidden"));
+  $("recPreview").classList.add("hidden");
+  $("recDownloadBtn").disabled = true;
+  $("recConfirmBtn").disabled = true;
+  $("recTimer").textContent = "00:00.0";
+  $("recSubtitlesList").innerHTML = "";
+  $("recInterim").textContent = "";
+  $("volumeFill").style.width = "0%";
+  $("micStatus").textContent = "尚未偵測";
+}
+$("recordBtn").onclick = openRecordModal;
+$("recCancelBtn").onclick = closeRecordModal;
+
+// Draggable modal via title bar
+(function () {
+  const modal = $("recordModal"), content = modal.querySelector(".modal-content"), handle = modal.querySelector("h2");
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const rect = content.getBoundingClientRect();
+    // Switch from transform centering to absolute positioning on first drag
+    content.style.transform = "none";
+    content.style.left = rect.left + "px";
+    content.style.top = rect.top + "px";
+    const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
+    const move = (ev) => {
+      content.style.left = clamp(ev.clientX - ox, 0, innerWidth - rect.width) + "px";
+      content.style.top  = clamp(ev.clientY - oy, 0, innerHeight - rect.height) + "px";
+    };
+    handle.setPointerCapture(e.pointerId);
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", () => handle.removeEventListener("pointermove", move), { once: true });
+  });
+})();
+
+async function refreshMics() {
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tmp.getTracks().forEach((t) => t.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const mics = devices.filter((d) => d.kind === "audioinput");
+    $("micSelect").innerHTML = mics.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.label || "麥克風")}</option>`).join("");
+    $("micStatus").textContent = `偵測到 ${mics.length} 個麥克風`;
+  } catch (err) {
+    $("micStatus").textContent = `無法存取麥克風：${err.message}`;
+  }
+}
+$("micRefreshBtn").onclick = refreshMics;
+
+function formatRecTime(ms) {
+  const s = ms / 1000;
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}.${Math.floor((s % 1) * 10)}`;
+}
+function startVolumeMeter(stream) {
+  recAudioCtx = new AudioContext();
+  const analyser = recAudioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  recAudioCtx.createMediaStreamSource(stream).connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  (function tick() {
+    recVolFrame = requestAnimationFrame(tick);
+    analyser.getByteFrequencyData(data);
+    const avg = data.reduce((a, b) => a + b, 0) / data.length;
+    $("volumeFill").style.width = `${Math.min(100, avg * 2.5)}%`;
+  })();
+}
+function stopRecordingNow() {
+  if (recMediaRecorder && recMediaRecorder.state !== "inactive") recMediaRecorder.stop();
+  clearInterval(recTimerInterval);
+  cancelAnimationFrame(recVolFrame);
+  if (recAudioCtx) { recAudioCtx.close().catch(() => {}); recAudioCtx = null; }
+  if (recStream) { recStream.getTracks().forEach((t) => t.stop()); recStream = null; }
+  $("volumeFill").style.width = "0%";
+}
+
+$("recStartBtn").onclick = async () => {
+  try {
+    const deviceId = $("micSelect").value;
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
+    recChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+    recMediaRecorder = new MediaRecorder(recStream, { mimeType });
+    recMediaRecorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+    recMediaRecorder.onstop = onRecStop;
+    recMediaRecorder.start(100);
+    recStartedAt = Date.now(); recPausedMs = 0;
+    recTimerInterval = setInterval(() => {
+      $("recTimer").textContent = formatRecTime(Date.now() - recStartedAt - recPausedMs);
+    }, 100);
+    startVolumeMeter(recStream);
+    $("recStartBtn").classList.add("hidden");
+    $("recPauseBtn").classList.remove("hidden");
+    $("recStopBtn").classList.remove("hidden");
+    $("micStatus").textContent = "錄音中…";
+  } catch (err) {
+    $("micStatus").textContent = `錄音失敗：${err.message}`;
+  }
+};
+$("recPauseBtn").onclick = () => {
+  if (recMediaRecorder?.state === "recording") {
+    recMediaRecorder.pause(); recPauseTs = Date.now();
+    clearInterval(recTimerInterval);
+    $("recPauseBtn").classList.add("hidden"); $("recResumeBtn").classList.remove("hidden");
+    $("micStatus").textContent = "已暫停";
+  }
+};
+$("recResumeBtn").onclick = () => {
+  if (recMediaRecorder?.state === "paused") {
+    recMediaRecorder.resume(); recPausedMs += Date.now() - recPauseTs;
+    recTimerInterval = setInterval(() => {
+      $("recTimer").textContent = formatRecTime(Date.now() - recStartedAt - recPausedMs);
+    }, 100);
+    $("recResumeBtn").classList.add("hidden"); $("recPauseBtn").classList.remove("hidden");
+    $("micStatus").textContent = "錄音中…";
+  }
+};
+$("recStopBtn").onclick = stopRecordingNow;
+
+function onRecStop() {
+  recBlob = new Blob(recChunks, { type: recMediaRecorder.mimeType });
+  $("recPauseBtn").classList.add("hidden"); $("recResumeBtn").classList.add("hidden"); $("recStopBtn").classList.add("hidden");
+  $("recStartBtn").classList.remove("hidden");
+  $("recDownloadBtn").disabled = false; $("recConfirmBtn").disabled = false;
+  $("micStatus").textContent = "錄音完成";
+  if (recPreviewAudio) { recPreviewAudio.pause(); URL.revokeObjectURL(recPreviewAudio.src); }
+  recPreviewAudio = new Audio(URL.createObjectURL(recBlob));
+  recPreviewAudio.onloadedmetadata = () => { $("recTrimEnd").value = recPreviewAudio.duration.toFixed(2); $("recTrimStart").value = "0"; };
+  recPreviewAudio.ontimeupdate = () => {
+    const d = recPreviewAudio.duration || 0, t = recPreviewAudio.currentTime;
+    $("previewTime").textContent = `${t.toFixed(2)} / ${d.toFixed(2)}`;
+    if (d) $("previewSeek").value = (t / d) * 100;
+  };
+  recPreviewAudio.onended = () => { $("previewPlayBtn").classList.remove("hidden"); $("previewPauseBtn").classList.add("hidden"); };
+  $("recPreview").classList.remove("hidden");
+}
+
+$("previewPlayBtn").onclick = () => { recPreviewAudio?.play(); $("previewPlayBtn").classList.add("hidden"); $("previewPauseBtn").classList.remove("hidden"); };
+$("previewPauseBtn").onclick = () => { recPreviewAudio?.pause(); $("previewPauseBtn").classList.add("hidden"); $("previewPlayBtn").classList.remove("hidden"); };
+$("previewSeek").oninput = () => { if (recPreviewAudio?.duration) recPreviewAudio.currentTime = (Number($("previewSeek").value) / 100) * recPreviewAudio.duration; };
+$("trimToPreviewBtn").onclick = () => { if (recPreviewAudio) $("recTrimEnd").value = recPreviewAudio.currentTime.toFixed(2); };
+$("recDownloadBtn").onclick = async () => {
+  if (!recBlob) return;
+  try {
+    const form = new FormData();
+    form.append("audio", recBlob, "recording.webm");
+    const res = await fetch("http://127.0.0.1:8765/api/convert-audio?format=mp3", { method: "POST", body: form });
+    if (!res.ok) throw new Error("server error");
+    download(`錄音_${Date.now()}.mp3`, await res.blob());
+  } catch {
+    download(`錄音_${Date.now()}.webm`, recBlob);
+    showToast("MP3 轉換需啟動 start.ps1，已改下載 WebM 格式。");
+  }
+};
+
+$("recTranscribeBtn").onclick = async () => {
+  if (!recBlob) return showToast("請先完成錄音。");
+  $("recTranscribeBtn").disabled = true; $("recTranscribeBtn").textContent = "辨識中…";
+  try {
+    const form = new FormData();
+    form.append("audio", recBlob, "recording.webm");
+    const res = await fetch("http://127.0.0.1:8765/api/transcribe-audio?language=zh", { method: "POST", body: form });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderRecSubtitles(data.segments);
+    showToast(`辨識完成，共 ${data.segments.length} 段。`);
+  } catch (err) {
+    showToast(`辨識失敗：${err.message}。（需啟動 start.ps1 並安裝 faster-whisper）`);
+  } finally {
+    $("recTranscribeBtn").disabled = false; $("recTranscribeBtn").textContent = "辨識錄音";
+  }
+};
+$("recSplitSentencesBtn").onclick = () => {
+  const items = [...$("recSubtitlesList").querySelectorAll(".sub-item")];
+  if (!items.length) return showToast("請先辨識錄音。");
+  const fullText = items.map((el) => el.querySelector(".sub-text").value).join("");
+  const parts = fullText.match(/[^。！？!?\n]+[。！？!?\n]?/g)?.filter((s) => s.trim()) || [fullText];
+  const dur = recPreviewAudio?.duration || 1;
+  renderRecSubtitles(parts.map((text, i) => ({ start: (i / parts.length) * dur, end: ((i + 1) / parts.length) * dur, text: text.trim() })));
+};
+function renderRecSubtitles(segments) {
+  $("recSubtitlesList").innerHTML = segments.map((seg, i) =>
+    `<div class="sub-item" data-i="${i}"><span class="sub-time">${seg.start.toFixed(2)}–${seg.end.toFixed(2)}</span><input class="sub-text" value="${esc(seg.text)}" data-start="${seg.start}" data-end="${seg.end}"></div>`
+  ).join("");
+}
+
+$("recConfirmBtn").onclick = async () => {
+  if (!recBlob) return;
+  const trimStart = Number($("recTrimStart").value) || 0;
+  const trimEnd = Number($("recTrimEnd").value) || (recPreviewAudio?.duration || 0);
+  const duration = Math.max(0.1, trimEnd - trimStart);
+  const subtitles = [...$("recSubtitlesList").querySelectorAll(".sub-item")].map((el) => {
+    const inp = el.querySelector(".sub-text");
+    return { id: id("sub"), start: Number(inp.dataset.start) - trimStart, end: Number(inp.dataset.end) - trimStart, text: inp.value.trim() };
+  }).filter((s) => s.text);
+  const waveform = await extractWaveform(recBlob);
+  const url = URL.createObjectURL(recBlob);
+  const mediaEl = new Audio(url);
+  pushUndo();
+  state.media = { type: "audio", fileName: "錄音.webm", duration, offset: trimStart, volume: 1, muted: false, src: url, element: mediaEl, waveform };
+  if (subtitles.length) state.subtitles = subtitles;
+  renderAll(); saveLocal();
+  closeRecordModal();
+  showToast("已將錄音加入專案。");
+};
+
+// Dropdown menus
+document.querySelectorAll(".dropdown-toggle").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const dropdown = btn.closest(".dropdown");
+    const isOpen = dropdown.classList.contains("open");
+    document.querySelectorAll(".dropdown").forEach((d) => d.classList.remove("open"));
+    if (!isOpen) dropdown.classList.add("open");
+  });
+});
+document.addEventListener("click", () => document.querySelectorAll(".dropdown").forEach((d) => d.classList.remove("open")));
+document.querySelectorAll(".dropdown-menu button").forEach((btn) => {
+  btn.addEventListener("click", () => btn.closest(".dropdown").classList.remove("open"));
+});

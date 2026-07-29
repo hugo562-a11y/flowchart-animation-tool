@@ -16,11 +16,14 @@ $fonts = foreach ($key in $fontKeys) {
 $fonts = $fonts | Where-Object { $_ } | Sort-Object -Unique
 $json = $fonts | ConvertTo-Json -Compress
 Set-Content -LiteralPath $fontScript -Value "globalThis.INSTALLED_FONTS = $json;" -Encoding UTF8
-$edgeCandidates = @(
+$browserCandidates = @(
+    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+    "$env:LocalAppData\Google\Chrome\Application\chrome.exe",
     "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
     "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
 )
-$edge = $edgeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$browser = $browserCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $health = $false
 try {
     $health = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8765/api/health" -TimeoutSec 1).StatusCode -eq 200
@@ -35,8 +38,8 @@ if (-not $health) {
         } catch {}
     }
 }
-if ($edge) {
-    Start-Process -FilePath $edge -ArgumentList "--app=$url"
+if ($browser) {
+    Start-Process -FilePath $browser -ArgumentList "--app=$url"
 } else {
     Start-Process $url
 }
