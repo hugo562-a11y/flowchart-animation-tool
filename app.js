@@ -1391,7 +1391,13 @@ $("recConfirmBtn").onclick = async () => {
     return { id: id("sub"), start: Number(inp.dataset.start) - trimStart, end: Number(inp.dataset.end) - trimStart, text: inp.value.trim() };
   }).filter((s) => s.text);
   const waveform = await extractWaveform(recBlob);
-  const url = URL.createObjectURL(recBlob);
+  // Convert to data URL so it survives page reloads (blob: URLs are revoked on reload)
+  const url = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(recBlob);
+  });
   const mediaEl = new Audio(url);
   pushUndo();
   const fileDuration = recPreviewAudio?.duration || (trimEnd || duration);
