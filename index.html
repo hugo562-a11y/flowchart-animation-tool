@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>流程圖動畫工具</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">流程圖動畫工具</div>
+
+    <div class="dropdown">
+      <button class="dropdown-toggle">檔案 ▾</button>
+      <div class="dropdown-menu">
+        <button id="newBtn">新專案</button>
+        <hr>
+        <label class="button">匯入文字<input id="textFile" type="file" accept=".txt,text/plain"></label>
+        <label class="button">開啟專案<input id="projectFile" type="file" accept=".json,application/json"></label>
+        <hr>
+        <button id="saveBtn">另存專案</button>
+        <hr>
+        <button id="saveLayoutBtn">儲存版面</button>
+        <button id="loadLayoutBtn">載入版面</button>
+      </div>
+    </div>
+
+    <div class="dropdown">
+      <button class="dropdown-toggle">媒體 ▾</button>
+      <div class="dropdown-menu">
+        <label class="button">匯入音訊<input id="audioFile" type="file" accept="audio/*"></label>
+        <label class="button">匯入影片<input id="videoFile" type="file" accept="video/*"></label>
+        <button id="recordBtn">🎤 錄音</button>
+      </div>
+    </div>
+
+    <span class="divider"></span>
+    <button id="undoBtn" title="Ctrl+Z">復原</button>
+    <button id="redoBtn" title="Ctrl+Y">重做</button>
+    <span class="divider"></span>
+    <button id="addNodeBtn">新增節點</button>
+    <button id="addLineBtn">新增連接線</button>
+    <button id="deleteBtn">刪除選取</button>
+    <span class="grow"></span>
+    <label class="inline"><input id="showNumbers" type="checkbox"> 顯示編號</label>
+    <span id="saveState" class="muted">已自動保存</span>
+  </header>
+
+  <main class="workspace">
+    <aside class="left-panel panel">
+      <section>
+        <h2>文字檔匯入</h2>
+        <div id="importHint" class="empty">請使用上方「匯入文字」選擇 `.txt` 檔案。匯入後會自動解析、調整節點尺寸並平均排版。</div>
+        <div id="parseErrors" class="errors"></div>
+      </section>
+      <section class="list-section">
+        <h2>節點清單</h2>
+        <div id="nodeList" class="object-list"></div>
+      </section>
+      <section>
+        <h2>畫布背景</h2>
+        <label>尺寸
+          <select id="canvasPreset">
+            <option value="1920x1080">1920 × 1080</option>
+            <option value="1080x1920">1080 × 1920</option>
+            <option value="1080x1080">1080 × 1080</option>
+            <option value="custom">自訂</option>
+          </select>
+        </label>
+        <div class="row">
+          <label>寬<input id="canvasWidth" type="number" min="320" max="7680"></label>
+          <label>高<input id="canvasHeight" type="number" min="240" max="4320"></label>
+        </div>
+        <label>背景類型
+          <select id="backgroundType">
+            <option value="solid">純色</option>
+            <option value="gradient">漸層</option>
+            <option value="image">圖片</option>
+          </select>
+        </label>
+        <label class="inline"><input id="transparentBackground" type="checkbox"> 透明背景</label>
+        <div class="row">
+          <label>顏色 1<input id="backgroundColor1" type="color"></label>
+          <label>顏色 2<input id="backgroundColor2" type="color"></label>
+        </div>
+        <label class="button block">選擇背景圖片<input id="backgroundImage" type="file" accept="image/*"></label>
+        <button id="clearBackgroundImageBtn" class="block">移除背景圖片</button>
+      </section>
+    </aside>
+    <div id="leftSplitter" class="vertical-splitter" title="拖曳調整左側工具區寬度"></div>
+
+    <section class="center">
+      <div class="canvas-toolbar">
+        <button id="autoLayoutBtn">重新自動排版</button>
+        <button id="fitBtn">符合視窗</button>
+        <button id="resetPanBtn">回正中</button>
+        <span class="divider"></span>
+        <button id="alignLeftBtn">靠左</button>
+        <button id="alignCenterBtn">水平置中</button>
+        <button id="alignRightBtn">靠右</button>
+        <button id="alignTopBtn">靠上</button>
+        <button id="alignMiddleBtn">垂直置中</button>
+        <button id="alignBottomBtn">靠下</button>
+        <button id="distributeHBtn">水平均分</button>
+        <button id="distributeVBtn">垂直均分</button>
+        <label>縮放 <input id="zoomRange" type="range" min="5" max="160" value="55"> <span id="zoomLabel">55%</span></label>
+        <span id="canvasHint" class="muted">空白拖曳框選；中鍵拖曳平移；滾輪縮放；Shift 加選；Ctrl 減選。</span>
+      </div>
+      <div id="canvasViewport" class="canvas-viewport">
+        <div class="canvas-stage">
+          <svg id="canvasSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+    </section>
+    <div id="rightSplitter" class="vertical-splitter" title="拖曳調整右側屬性區寬度"></div>
+
+    <aside class="right-panel panel">
+      <h2>屬性</h2>
+      <div id="emptyProperties" class="empty">選取節點或連接線以編輯屬性。</div>
+      <div id="nodeProperties" class="properties hidden">
+        <h3>節點 <span id="nodeSelectionCount"></span></h3>
+        <label>文字<input id="nodeText" type="text"></label>
+        <label>樣式範本
+          <select id="nodeTemplate">
+            <option value="pink">粉紅膠囊</option>
+            <option value="green">綠色膠囊</option>
+            <option value="blue">藍色膠囊</option>
+            <option value="yellow">黃色膠囊</option>
+            <option value="simple">純色圓角</option>
+          </select>
+        </label>
+        <div class="row">
+          <label>形狀
+            <select id="nodeShape">
+              <option value="capsule">膠囊</option>
+              <option value="rounded">圓角矩形</option>
+              <option value="rectangle">矩形</option>
+              <option value="circle">圓形</option>
+              <option value="ellipse">橢圓形</option>
+            </select>
+          </label>
+          <label>填色
+            <select id="nodeFillMode">
+              <option value="gradient">漸層</option>
+              <option value="solid">純色</option>
+              <option value="none">無底色</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label>寬<input id="nodeWidth" type="number" min="80"></label>
+          <label>高<input id="nodeHeight" type="number" min="36"></label>
+        </div>
+        <div class="row">
+          <input id="nodeWidthRange" type="range" min="80" max="900" step="1">
+          <input id="nodeHeightRange" type="range" min="36" max="500" step="1">
+        </div>
+        <div class="row">
+          <label>底色 1<input id="nodeFill1" type="color"></label>
+          <label>底色 2<input id="nodeFill2" type="color"></label>
+        </div>
+        <div class="row">
+          <label>外框
+            <select id="nodeStrokeMode">
+              <option value="solid">純色</option>
+              <option value="gradient">漸層</option>
+              <option value="none">無外框</option>
+            </select>
+          </label>
+          <label>粗細<input id="nodeStrokeWidth" type="number" min="0" max="20"></label>
+        </div>
+        <div class="row">
+          <label>外框色 1<input id="nodeStroke" type="color"></label>
+          <label>外框色 2<input id="nodeStroke2" type="color"></label>
+        </div>
+        <div class="row">
+          <label>文字色<input id="nodeTextColor" type="color"></label>
+          <label>外框色<input id="nodeTextStroke" type="color"></label>
+        </div>
+        <div class="row">
+          <label>字型<select id="nodeFont"></select></label>
+          <label>字級<input id="nodeFontSize" type="number" min="10" max="160"></label>
+        </div>
+        <div class="row">
+          <label>文字外框<input id="nodeTextStrokeWidth" type="number" min="0" max="10" step="0.5"></label>
+          <label>圓角<input id="nodeRadius" type="number" min="0" max="250"></label>
+        </div>
+        <input id="nodeRadiusRange" type="range" min="0" max="250" step="1">
+        <div class="row">
+          <label>開始秒數<input id="nodeStart" type="number" min="0" step="0.1"></label>
+          <label>持續秒數<input id="nodeDuration" type="number" min="0.1" step="0.1"></label>
+        </div>
+        <label>動畫
+          <select id="nodeEffect">
+            <option value="fade">淡入</option>
+            <option value="fadeOut">淡出</option>
+            <option value="scale">放大進入</option>
+            <option value="scaleDown">縮小進入</option>
+            <option value="slideLeft">由左滑入</option>
+            <option value="slideRight">由右滑入</option>
+            <option value="slideUp">由上滑入</option>
+            <option value="slideDown">由下滑入</option>
+            <option value="bounce">彈跳進入</option>
+            <option value="flip">翻轉進入</option>
+            <option value="typewriter">打字顯示</option>
+          </select>
+        </label>
+        <label>速度曲線
+          <select id="nodeEasing">
+            <option value="linear">線性</option>
+            <option value="easeIn">加速</option>
+            <option value="easeOut">減速</option>
+            <option value="easeInOut">先加速後減速</option>
+            <option value="elastic">彈性</option>
+            <option value="back">回彈</option>
+          </select>
+        </label>
+      </div>
+      <div id="lineProperties" class="properties hidden">
+        <h3>連接線</h3>
+        <label>來源<select id="lineFrom"></select></label>
+        <label>目標<select id="lineTo"></select></label>
+        <div class="row">
+          <label>顏色<input id="lineColor" type="color"></label>
+          <label>粗細<input id="lineWidth" type="number" min="1" max="30"></label>
+        </div>
+        <input id="lineWidthRange" type="range" min="1" max="30" step="1">
+        <label>線型
+          <select id="lineDash">
+            <option value="solid">實線</option>
+            <option value="dash">虛線</option>
+          </select>
+        </label>
+        <label>路徑
+          <select id="lineType">
+            <option value="straight">直線</option>
+            <option value="curve">曲線</option>
+          </select>
+        </label>
+        <label>箭頭方向
+          <select id="lineArrow">
+            <option value="none">無箭頭</option>
+            <option value="end">正向箭頭</option>
+            <option value="start">反向箭頭</option>
+            <option value="both">雙向箭頭</option>
+          </select>
+        </label>
+        <div class="row">
+          <label>起點造型
+            <select id="lineStartMarker">
+              <option value="none">無</option>
+              <option value="arrow">實心箭頭</option>
+              <option value="openArrow">空心箭頭</option>
+              <option value="triangle">三角形</option>
+              <option value="circle">圓形</option>
+              <option value="square">方形</option>
+              <option value="diamond">菱形</option>
+            </select>
+          </label>
+          <label>終點造型
+            <select id="lineEndMarker">
+              <option value="none">無</option>
+              <option value="arrow">實心箭頭</option>
+              <option value="openArrow">空心箭頭</option>
+              <option value="triangle">三角形</option>
+              <option value="circle">圓形</option>
+              <option value="square">方形</option>
+              <option value="diamond">菱形</option>
+            </select>
+          </label>
+        </div>
+        <label>箭頭大小<input id="lineMarkerSize" type="range" min="6" max="40" step="1"></label>
+        <div class="row">
+          <button id="addControlPointBtn">新增控制點</button>
+          <button id="deleteControlPointBtn">刪除控制點</button>
+        </div>
+        <div class="row">
+          <label>開始秒數<input id="lineStart" type="number" min="0" step="0.1"></label>
+          <label>持續秒數<input id="lineDuration" type="number" min="0.1" step="0.1"></label>
+        </div>
+        <label>動畫
+          <select id="lineEffect">
+            <option value="draw">路徑繪製</option>
+            <option value="fade">淡入</option>
+            <option value="wipe">擦拭顯示</option>
+            <option value="center">中央展開</option>
+          </select>
+        </label>
+        <label>速度曲線
+          <select id="lineEasing">
+            <option value="linear">線性</option>
+            <option value="easeIn">加速</option>
+            <option value="easeOut">減速</option>
+            <option value="easeInOut">先加速後減速</option>
+            <option value="elastic">彈性</option>
+            <option value="back">回彈</option>
+          </select>
+        </label>
+      </div>
+    </aside>
+  </main>
+
+  <div id="timelineSplitter" class="horizontal-splitter" title="拖曳調整時間軸高度"></div>
+  <section class="timeline-panel">
+    <div class="timeline-toolbar">
+      <button id="playBtn" class="primary">播放</button>
+      <button id="stopBtn">回到開頭</button>
+      <button id="playheadLeftBtn" title="播放頭向左移動 0.1 秒">←</button>
+      <button id="playheadRightBtn" title="播放頭向右移動 0.1 秒">→</button>
+      <label>播放位置 <input id="playhead" type="range" min="0" max="10" step="0.01" value="0"></label>
+      <span id="timeLabel">0.00 / 0.00 秒</span>
+      <span class="grow"></span>
+      <label>FPS <input id="fps" type="number" min="1" max="60" value="30"></label>
+      <button id="exportVideoBtn">輸出 MOV</button>
+      <button id="exportPngBtn">輸出序列</button>
+      <button id="exportMp4Btn">輸出 MP4</button>
+    </div>
+    <div id="timeline" class="timeline">
+      <div id="timelinePlayhead" class="timeline-playhead"><span></span></div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="recordModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2 id="recordModalTitle">🎤 錄音與語音辨識</h2>
+      <div class="modal-body">
+        <div class="rec-controls">
+          <label>麥克風
+            <select id="micSelect"><option value="">請選擇麥克風</option></select>
+          </label>
+          <button id="micRefreshBtn" type="button">重新偵測</button>
+          <div class="mic-status" id="micStatus">尚未偵測</div>
+          <div class="rec-buttons">
+            <button id="recStartBtn" class="primary">● 開始錄音</button>
+            <button id="recPauseBtn" class="hidden">⏸ 暫停</button>
+            <button id="recResumeBtn" class="hidden">▶ 繼續</button>
+            <button id="recStopBtn" class="hidden">■ 停止</button>
+          </div>
+          <div class="rec-timer" id="recTimer">00:00.0</div>
+        </div>
+        <div class="rec-volume">
+          <div class="volume-bar" id="volumeBar"><div class="volume-fill" id="volumeFill"></div></div>
+        </div>
+        <div class="rec-interim" id="recInterim"></div>
+        <div class="rec-subtitles">
+          <div class="rec-subtitles-header">
+            <span>已辨識字幕</span>
+            <button id="recTranscribeBtn" type="button">辨識錄音</button>
+            <button id="recSplitSentencesBtn" type="button">自動斷句</button>
+            <span class="muted">（點擊文字可編輯）</span>
+          </div>
+          <div class="rec-subtitles-list" id="recSubtitlesList"></div>
+        </div>
+        <div class="rec-preview hidden" id="recPreview">
+          <div class="preview-controls">
+            <button id="previewPlayBtn">▶ 播放</button>
+            <button id="previewPauseBtn" class="hidden">⏸ 暫停</button>
+            <span id="previewTime">0.00 / 0.00</span>
+            <input id="previewSeek" type="range" min="0" max="100" value="0">
+          </div>
+          <div class="trim-controls">
+            <label>剪輯開始 <input id="recTrimStart" type="number" min="0" step="0.01" value="0"></label>
+            <label>剪輯結束 <input id="recTrimEnd" type="number" min="0" step="0.01" value="0"></label>
+            <button id="trimToPreviewBtn" type="button">套用目前播放點</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="recCancelBtn">取消</button>
+        <button id="recDownloadBtn" disabled>下載錄音</button>
+        <button id="recConfirmBtn" class="primary" disabled>確認 ✓</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="installed-fonts.js"></script>
+  <script src="parser.js"></script>
+  <script src="app.js?v=2"></script>
+</body>
+</html>
