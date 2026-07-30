@@ -160,7 +160,10 @@ function upgradeState() {
   state.selectedTimelineItems ||= [];
   state.subtitles ||= [];
   state.media ||= null;
-  if (state.media) { state.media.projectStart ||= 0; state.media.offset ||= 0; state.media.fileDuration ||= state.media.duration; }
+  if (state.media) {
+    state.media.projectStart ||= 0; state.media.offset ||= 0; state.media.fileDuration ||= state.media.duration;
+    if (typeof state.media.element?.play !== "function") state.media.element = null;
+  }
   state.nodes.forEach((node) => { if (!node.easing) node.easing = "easeInOut"; if (node.effect === "slide") node.effect = "slideLeft"; node.shape ||= "capsule"; node.fillMode ||= "gradient"; node.strokeMode ||= "solid"; node.stroke2 ||= node.stroke; });
   state.lines.forEach((line) => {
     if (!line.easing) line.easing = "easeInOut";
@@ -871,7 +874,7 @@ function play() {
   if (state.playhead >= totalDuration()) state.playhead = 0;
   state.playing = true; playStartedAt = performance.now(); playBase = state.playhead; shuttleSpeed = 0; $("playBtn").textContent = "暫停";
   if (state.media?.src) {
-    if (!state.media.element || state.media.element.error) {
+    if (typeof state.media.element?.play !== "function") {
       if (state.media.type === "audio") state.media.element = new Audio(state.media.src);
       else { const v = document.createElement("video"); v.src = state.media.src; state.media.element = v; }
       state.media.element.load();
@@ -1123,10 +1126,10 @@ window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
   if (e.key === "Delete" && !["INPUT", "TEXTAREA"].includes(tag)) deleteSelected();
   if (e.key === "Escape") { state.selectedNodes = []; state.selectedLine = null; linkMode = false; linkSourceId = null; linkPreview = null; $("addLineBtn").classList.remove("primary"); document.body.classList.remove("line-editing", "link-mode"); renderAll(); }
-  // Space toggles play even when a range/non-text input has focus
+  // Space toggles play — blocked only when user is typing in a text field
   if (e.code === "Space" && !e.repeat) {
-    const inTextEntry = tag === "TEXTAREA" || (tag === "INPUT" && !["range", "checkbox", "radio", "button"].includes(document.activeElement?.type));
-    if (!inTextEntry) { e.preventDefault(); spacePressed = true; document.body.classList.add("space-pan"); play(); return; }
+    const isTyping = tag === "TEXTAREA" || (tag === "INPUT" && ["text","number","email","search","url","password","tel"].includes(document.activeElement?.type));
+    if (!isTyping) { e.preventDefault(); play(); return; }
   }
   if (inInput) return;
   if (e.key === "ArrowLeft") { e.preventDefault(); nudgePlayhead(-0.1); }
