@@ -875,6 +875,7 @@ function play() {
   if (state.playing) { state.playing = false; shuttleSpeed = 0; $("playBtn").textContent = "播放"; if (state.media?.element) state.media.element.pause(); return; }
   if (state.playhead >= totalDuration()) state.playhead = 0;
   state.playing = true; playStartedAt = performance.now(); playBase = state.playhead; shuttleSpeed = 0; $("playBtn").textContent = "暫停";
+  if (state.media && !state.media.src) { showToast("⚠️ 音訊來源已遺失（頁面重整後 blob URL 失效），請重新匯入音訊檔案。"); }
   if (state.media?.src) {
     if (typeof state.media.element?.play !== "function") {
       if (state.media.type === "audio") state.media.element = new Audio(state.media.src);
@@ -885,6 +886,7 @@ function play() {
     el.volume = state.media.volume ?? 1;
     el.muted = state.media.muted ?? false;
     el.currentTime = audioTimeAtPlayhead();
+    console.log("[audio]", { src: el.src?.slice(0,60), readyState: el.readyState, volume: el.volume, muted: el.muted, currentTime: el.currentTime, duration: el.duration });
     el.play().catch((err) => showToast("音訊播放失敗：" + err.message));
   }
   requestAnimationFrame(tick);
