@@ -1123,8 +1123,12 @@ window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
   if (e.key === "Delete" && !["INPUT", "TEXTAREA"].includes(tag)) deleteSelected();
   if (e.key === "Escape") { state.selectedNodes = []; state.selectedLine = null; linkMode = false; linkSourceId = null; linkPreview = null; $("addLineBtn").classList.remove("primary"); document.body.classList.remove("line-editing", "link-mode"); renderAll(); }
+  // Space toggles play even when a range/non-text input has focus
+  if (e.code === "Space" && !e.repeat) {
+    const inTextEntry = tag === "TEXTAREA" || (tag === "INPUT" && !["range", "checkbox", "radio", "button"].includes(document.activeElement?.type));
+    if (!inTextEntry) { e.preventDefault(); spacePressed = true; document.body.classList.add("space-pan"); play(); return; }
+  }
   if (inInput) return;
-  if (e.code === "Space" && !e.repeat) { e.preventDefault(); spacePressed = false; document.body.classList.remove("space-pan"); play(); }
   if (e.key === "ArrowLeft") { e.preventDefault(); nudgePlayhead(-0.1); }
   if (e.key === "ArrowRight") { e.preventDefault(); nudgePlayhead(0.1); }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === "ArrowUp") { e.preventDefault(); selectRelativeTimelineLayer(-1); }
