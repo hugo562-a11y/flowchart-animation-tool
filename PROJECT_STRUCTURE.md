@@ -50,8 +50,8 @@
 | Timeline rendering | 軌道 HTML 產生、波形 Canvas 繪製 |
 | Timeline interaction | 片段拖曳、邊緣縮放、音訊剪輯 |
 | Properties panel | 屬性欄位雙向綁定 |
-| Export | PNG 序列、WebM/MP4 瀏覽器錄製、MOV/MP4 透過 FFmpeg |
-| Recording modal | 麥克風錄音、預覽、剪輯、Whisper 辨識 |
+| Export | PNG 序列；MOV（ProRes）、MP4（H.264）透過 FFmpeg；均含音訊混合 |
+| Recording modal | 麥克風錄音、預覽、剪輯、Whisper 辨識；錄音存為 base64 data URL |
 | Media playback | 音訊／影片同步播放、JKL 穿梭 |
 | SpaceMouse | WebSocket 連線與六軸映射 |
 | Persistence | localStorage 自動保存、JSON 匯出入、版面快照 |
@@ -99,12 +99,23 @@ Dark theme 為主，主要區塊：
 
 | 端點 | 方法 | 功能 |
 |---|---|---|
-| `GET /api/health` | GET | 健康檢查（start.ps1 等待就緒用） |
+| `GET /api/health` | GET | 健康檢查（launch.bat 等待就緒用） |
 | `GET /index.html` 等 | GET | 靜態檔案服務 |
-| `POST /api/resolve-export` | POST | multipart 接收 PNG ZIP，FFmpeg 輸出 MOV/MP4/WebM |
-| `POST /api/frame-export` | POST | 逐格 PNG 接收，輸出影片 |
+| `POST /api/resolve-export` | POST | multipart 接收影片 + 可選音訊，FFmpeg 輸出 ProRes MOV 或 H.264 MP4（含音訊混合） |
+| `POST /api/frame-export` | POST | 逐格 PNG 接收，輸出影片（MOV / MP4 / WebM） |
 | `POST /api/transcribe-audio` | POST | 音訊送 faster-whisper，返回帶時間戳字幕 JSON |
 | `POST /api/convert-audio` | POST | webm 轉 mp3/wav/aac（FFmpeg） |
+
+`/api/resolve-export` 接收欄位：
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `video` | binary | 瀏覽器 canvas.captureStream() 輸出的 WebM |
+| `format` | text | `mov`（ProRes，預設）或 `mp4`（H.264） |
+| `fps` | text | 影格率（1–60） |
+| `audio` | binary | 音訊檔案（可選），有時才混音 |
+| `audio_offset` | text | 音訊剪輯起點（秒），對應 `state.media.offset` |
+| `audio_start` | text | 音訊在影片中的起始時間（秒），對應 `state.media.projectStart` |
 
 ### `spacemouse_flow_bridge.py`
 Windows 專用的 HID 橋接器，Port 8766（WebSocket）。
@@ -188,11 +199,12 @@ PowerShell 啟動腳本，功能與 `launch.py` 相同，保留供 PowerShell �
   },
   media: {                 // 匯入的音訊或影片
     type,                  // audio | video
-    fileName, src,
+    fileName, src,         // src 永遠為 data: URL（base64），可存入 localStorage
     duration, offset,      // 剪輯起點（秒）
+    fileDuration,          // 原始音訊檔總長度（秒）
     projectStart,          // 在專案時間軸上的起始位置（秒）
     volume, muted,
-    element,               // HTMLAudioElement / HTMLVideoElement（runtime only）
+    element,               // HTMLAudioElement / HTMLVideoElement（runtime only，不序列化）
     waveform: []           // 正規化振幅陣列（0-1，2000 個取樣）
   },
   subtitles: [{ id, start, end, text }],

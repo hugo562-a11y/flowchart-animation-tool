@@ -76,6 +76,8 @@
 - PNG 序列 → ProRes 422 MOV（不透明）
 - PNG 序列 → H.264 MP4
 - PNG 序列 → WebM VP9 alpha（透明 MP4 替代方案）
+- 瀏覽器 WebM 影片 + 音訊 → ProRes MOV（`adelay` filter 對齊音訊起點）
+- 瀏覽器 WebM 影片 + 音訊 → H.264 MP4（同上）
 - WebM/Ogg 音訊 → MP3 / WAV / AAC 轉換
 
 ### faster-whisper（可選依賴）
@@ -137,13 +139,18 @@ state.media = {
   projectStart,   // 音訊在專案時間軸上的起始點（秒）
   offset,         // 音訊檔案本身的裁切起點（秒）
   duration,       // 播放時長（秒）
+  fileDuration,   // 原始音訊檔總長度（秒，用於波形取樣範圍計算）
+  src,            // 永遠為 base64 data: URL，可存入 localStorage 並在重整後繼續使用
+  element,        // HTMLAudioElement（runtime only，JSON.stringify 後為 {}，由 upgradeState() 清除後重建）
 }
 
-audioTime = playhead - projectStart + offset
+audioTime = max(0, playhead - projectStart + offset)
 ```
 - 拖曳 clip 本體 → 改變 `projectStart`
 - 拖曳左邊緣 → 同時改變 `projectStart` 和 `offset`（保持音訊內容對齊）
 - 拖曳右邊緣 → 改變 `duration`
+
+**重要設計決策**：錄音確認時改用 `FileReader.readAsDataURL()` 而非 `URL.createObjectURL()`。`blob:` URL 在頁面重整後失效，而 data URL 是純字串，可存入 localStorage。`upgradeState()` 在頁面載入時將 `state.media.element` 重置為 `null`（型別檢查 `typeof .play !== "function"`），並由 `play()` 在播放時重建。
 
 ### SVG 動畫渲染策略
 不使用 CSS animation 或 WAAPI，而是每一幀由 JS 計算每個元素當前的幾何狀態（progress → ease → 插值），直接寫入 SVG 屬性。好處是可以精確 seek 到任意時間點，支援逐格輸出。
