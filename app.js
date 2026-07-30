@@ -163,6 +163,8 @@ function upgradeState() {
   if (state.media) {
     state.media.projectStart ||= 0; state.media.offset ||= 0; state.media.fileDuration ||= state.media.duration;
     if (typeof state.media.element?.play !== "function") state.media.element = null;
+    // blob: URLs are revoked on page reload — clear stale src so play() doesn't silently fail
+    if (state.media.src?.startsWith("blob:")) state.media.src = null;
   }
   state.nodes.forEach((node) => { if (!node.easing) node.easing = "easeInOut"; if (node.effect === "slide") node.effect = "slideLeft"; node.shape ||= "capsule"; node.fillMode ||= "gradient"; node.strokeMode ||= "solid"; node.stroke2 ||= node.stroke; });
   state.lines.forEach((line) => {
@@ -880,8 +882,10 @@ function play() {
       state.media.element.load();
     }
     const el = state.media.element;
+    el.volume = state.media.volume ?? 1;
+    el.muted = state.media.muted ?? false;
     el.currentTime = audioTimeAtPlayhead();
-    el.play().catch(() => {});
+    el.play().catch((err) => showToast("音訊播放失敗：" + err.message));
   }
   requestAnimationFrame(tick);
 }
