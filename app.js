@@ -160,7 +160,7 @@ function upgradeState() {
   state.selectedTimelineItems ||= [];
   state.subtitles ||= [];
   state.media ||= null;
-  if (state.media) { state.media.projectStart ||= 0; state.media.offset ||= 0; }
+  if (state.media) { state.media.projectStart ||= 0; state.media.offset ||= 0; state.media.fileDuration ||= state.media.duration; }
   state.nodes.forEach((node) => { if (!node.easing) node.easing = "easeInOut"; if (node.effect === "slide") node.effect = "slideLeft"; node.shape ||= "capsule"; node.fillMode ||= "gradient"; node.strokeMode ||= "solid"; node.stroke2 ||= node.stroke; });
   state.lines.forEach((line) => {
     if (!line.easing) line.easing = "easeInOut";
@@ -510,13 +510,20 @@ function renderTimeline() {
   $("timeline").querySelectorAll(".audio-waveform").forEach((canvas) => {
     const wf = state.media?.waveform;
     if (!wf?.length) return;
+    const m = state.media;
+    const fileDur = m.fileDuration || m.duration;
+    const startFrac = Math.max(0, (m.offset || 0) / fileDur);
+    const endFrac = Math.min(1, ((m.offset || 0) + m.duration) / fileDur);
+    const startIdx = Math.floor(startFrac * wf.length);
+    const endIdx = Math.ceil(endFrac * wf.length);
+    const segLen = Math.max(1, endIdx - startIdx);
     const ctx = canvas.getContext("2d");
     const w = canvas.width, h = canvas.height, half = h / 2;
     ctx.clearRect(0, 0, w, h);
-    const barCount = Math.min(wf.length, Math.floor(w));
-    const step = wf.length / barCount;
+    const barCount = Math.min(segLen, Math.floor(w));
+    const step = segLen / barCount;
     for (let i = 0; i < barCount; i++) {
-      const idx = Math.floor(i * step);
+      const idx = startIdx + Math.floor(i * step);
       const barH = Math.max(2, wf[idx] * half);
       ctx.fillStyle = "rgba(127,200,255,0.85)";
       ctx.fillRect(i * (w / barCount), half - barH, Math.max(1, w / barCount), barH * 2);
@@ -778,7 +785,8 @@ function onTimelineDrag(e) {
       m.offset = Math.max(0, snapTime(drag.originalOffset + d));
       m.duration = Math.max(minDur, snapTime(drag.originalDuration - d));
     } else if (drag.edge === "resizeEnd") {
-      m.duration = Math.max(minDur, snapTime(drag.originalDuration + delta));
+      const maxDur = (m.fileDuration || Infinity) - (m.offset || 0);
+      m.duration = Math.max(minDur, Math.min(maxDur, snapTime(drag.originalDuration + delta)));
     }
     renderTimeline(); return;
   }
@@ -1072,7 +1080,7 @@ $("audioFile").onchange = async (e) => {
     const audio = new Audio(dataUrl);
     audio.onloadedmetadata = async () => {
       const waveform = await extractWaveform(file);
-      commit(() => { state.media = { type: "audio", src: dataUrl, duration: audio.duration, element: audio, blob: file, waveform }; });
+      commit(() => { state.media = { type: "audio", src: dataUrl, duration: audio.duration, fileDuration: audio.duration, element: audio, blob: file, waveform }; });
       showToast(`已匯入音訊：${file.name}，長度 ${audio.duration.toFixed(2)} 秒`);
       $("audioFile").value = ""; renderAll();
     };
@@ -1373,7 +1381,8 @@ $("recConfirmBtn").onclick = async () => {
   const url = URL.createObjectURL(recBlob);
   const mediaEl = new Audio(url);
   pushUndo();
-  state.media = { type: "audio", fileName: "錄音.webm", duration, offset: trimStart, volume: 1, muted: false, src: url, element: mediaEl, waveform };
+  const fileDuration = recPreviewAudio?.duration || (trimEnd || duration);
+  state.media = { type: "audio", fileName: "錄音.webm", duration, fileDuration, offset: trimStart, volume: 1, muted: false, src: url, element: mediaEl, waveform };
   if (subtitles.length) state.subtitles = subtitles;
   renderAll(); saveLocal();
   closeRecordModal();
