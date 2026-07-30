@@ -991,7 +991,7 @@ async function exportPngSequence() {
   download("透明PNG序列.zip", createZip(files));
   state.playhead = previous; renderAll(); showToast(`PNG 序列輸出完成，共 ${files.length} 張。`);
 }
-async function downloadResolveMov(blob, fps) {
+async function downloadResolveVideo(videoBlob, fps, format = "mov") {
   const healthController = new AbortController(), healthTimer = setTimeout(() => healthController.abort(), 2500);
   try {
     const health = await fetch("/api/health", { cache: "no-store", signal: healthController.signal });
@@ -999,23 +999,34 @@ async function downloadResolveMov(blob, fps) {
   } finally {
     clearTimeout(healthTimer);
   }
-  showToast("正在使用 FFmpeg 轉換 Resolve 相容 MOV，請勿關閉頁面。");
-  const response = await fetch(`/api/resolve-export?fps=${fps}`, { method: "POST", headers: { "Content-Type": blob.type || "application/octet-stream" }, body: blob });
-  if (!response.ok) throw new Error(`Resolve MOV 轉換失敗：${response.status}`);
-  download("流程圖動畫-Resolve相容.mov", await response.blob());
+  const label = format === "mp4" ? "MP4" : "Resolve 相容 MOV";
+  showToast(`正在使用 FFmpeg 轉換 ${label}，請勿關閉頁面。`);
+  const form = new FormData();
+  form.append("video", videoBlob, "recording.webm");
+  form.append("format", format);
+  form.append("fps", String(fps));
+  if (state.media?.src) {
+    const audioBlob = await fetch(state.media.src).then((r) => r.blob());
+    form.append("audio", audioBlob, "audio");
+    form.append("audio_offset", String(state.media.offset ?? 0));
+    form.append("audio_start", String(state.media.projectStart ?? 0));
+  }
+  const response = await fetch("/api/resolve-export", { method: "POST", body: form });
+  if (!response.ok) throw new Error(`${label} 轉換失敗：${response.status}`);
+  const filename = format === "mp4" ? "流程圖動畫.mp4" : "流程圖動畫-Resolve相容.mov";
+  download(filename, await response.blob());
 }
-async function exportVideo() {
+async function exportVideoToFormat(format, buttonId) {
   if (exportingVideo) return showToast("影片仍在輸出中，請稍候。");
   if (!globalThis.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) return showToast("此瀏覽器不支援影片輸出，請改用 Edge 或 Chrome。");
   exportingVideo = true;
-  const button = $("exportVideoBtn"), originalButtonText = button.textContent, fps = clamp(Number($("fps").value) || 30, 1, 60), previous = state.playhead, total = totalDuration(), canvas = document.createElement("canvas");
+  const button = $(buttonId), originalButtonText = button.textContent, fps = clamp(Number($("fps").value) || 30, 1, 60), previous = state.playhead, total = totalDuration(), canvas = document.createElement("canvas");
   let stream;
   button.disabled = true;
   try {
     canvas.width = state.canvas.width; canvas.height = state.canvas.height;
     const ctx = canvas.getContext("2d"); stream = canvas.captureStream(fps);
-    const allowMp4 = state.canvas.backgroundType !== "transparent", mp4 = allowMp4 && MediaRecorder.isTypeSupported("video/mp4;codecs=avc1") ? "video/mp4;codecs=avc1" : allowMp4 && MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "";
-    const mimeType = mp4 || "video/webm;codecs=vp9", chunks = [], recorder = new MediaRecorder(stream, { mimeType });
+    const mimeType = "video/webm;codecs=vp9", chunks = [], recorder = new MediaRecorder(stream, { mimeType });
     recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     recorder.onerror = () => showToast("影片錄製器發生錯誤。");
     recorder.start(1000);
@@ -1033,13 +1044,14 @@ async function exportVideo() {
     recorder.requestData();
     await new Promise((resolve) => setTimeout(resolve, 120));
     await new Promise((resolve, reject) => { recorder.onerror = () => reject(recorder.error || new Error("影片錄製失敗")); recorder.onstop = resolve; recorder.stop(); });
-    const ext = mp4 ? "mp4" : "webm", blob = new Blob(chunks, { type: mimeType });
+    const blob = new Blob(chunks, { type: mimeType });
     try {
-      await downloadResolveMov(blob, fps);
-      showToast("Resolve 相容 MOV 輸出完成。");
+      await downloadResolveVideo(blob, fps, format);
+      const label = format === "mp4" ? "MP4" : "Resolve 相容 MOV";
+      showToast(`${label} 輸出完成。`);
     } catch (_) {
-      download(`流程圖動畫-原始.${ext}`, blob);
-      showToast(`無法自動轉換，已下載瀏覽器版 ${ext.toUpperCase()}。`);
+      download("流程圖動畫-原始.webm", blob);
+      showToast("無法連線至 FFmpeg 伺服器，已下載瀏覽器版 WebM。");
     }
   } catch (error) {
     showToast(`影片輸出失敗：${error.message}`);
@@ -1049,6 +1061,8 @@ async function exportVideo() {
     state.playhead = previous; renderAll();
   }
 }
+async function exportVideo() { return exportVideoToFormat("mov", "exportVideoBtn"); }
+async function exportMp4() { return exportVideoToFormat("mp4", "exportMp4Btn"); }
 
 $("autoLayoutBtn").onclick = () => autoLayout(true); $("undoBtn").onclick = undo; $("redoBtn").onclick = redo;
 $("addNodeBtn").onclick = addNode; $("addLineBtn").onclick = addLine; $("deleteBtn").onclick = deleteSelected; $("saveBtn").onclick = saveProject; $("saveLayoutBtn").onclick = saveLayout; $("loadLayoutBtn").onclick = loadLayout;
@@ -1060,7 +1074,7 @@ $("newBtn").onclick = () => {
   const ui = clone(state.ui || defaultState().ui); pushUndo(); state = defaultState(); state.ui = ui; undoStack = []; redoStack = []; linkMode = false; linkSourceId = null; linkPreview = null; selectionRect = null; selectedControlPoint = null;
   document.body.classList.remove("line-editing", "link-mode"); $("parseErrors").textContent = ""; $("textFile").value = ""; $("projectFile").value = ""; renderAll(); saveLocal(); showToast("已建立乾淨的新專案，請匯入文字檔。");
 };
-$("playBtn").onclick = play; $("stopBtn").onclick = stop; $("playheadLeftBtn").onclick = () => nudgePlayhead(-0.1); $("playheadRightBtn").onclick = () => nudgePlayhead(0.1); $("exportPngBtn").onclick = exportPngSequence; $("exportVideoBtn").onclick = exportVideo;
+$("playBtn").onclick = play; $("stopBtn").onclick = stop; $("playheadLeftBtn").onclick = () => nudgePlayhead(-0.1); $("playheadRightBtn").onclick = () => nudgePlayhead(0.1); $("exportPngBtn").onclick = exportPngSequence; $("exportVideoBtn").onclick = exportVideo; $("exportMp4Btn").onclick = exportMp4;
 $("playhead").oninput = (e) => { state.playhead = Number(e.target.value); if (state.media?.element) try { state.media.element.currentTime = audioTimeAtPlayhead(); } catch (_) {} renderCanvas(); renderTimeline(); };
 $("timeline").addEventListener("pointerdown", (e) => { if (e.target === $("timeline") || e.target.classList.contains("track-lane")) startTimelineMarquee(e); });
 $("timeline").addEventListener("scroll", renderTimelinePlayhead);

@@ -52,41 +52,66 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(500, "ffmpeg is not available")
             return
 
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            self.send_error(400, "invalid content length")
-            return
-        if length <= 0 or length > MAX_UPLOAD_BYTES:
-            self.send_error(413, "invalid upload size")
+        form = self._read_multipart_form()
+        if form is None:
             return
 
-        query = parse_qs(parsed.query)
+        video_data = form.get("video")
+        if not video_data:
+            self.send_error(400, "video is required")
+            return
+
+        audio_data = form.get("audio")
+        fmt = (form.get("format") or b"mov").decode("utf-8", errors="ignore").strip()
+        if fmt not in ("mov", "mp4"):
+            fmt = "mov"
+
         try:
-            fps = max(1, min(60, int(query.get("fps", ["30"])[0])))
-        except ValueError:
+            fps = max(1, min(60, int((form.get("fps") or b"30").decode())))
+        except (ValueError, AttributeError):
             fps = 30
+
+        try:
+            audio_offset = max(0.0, float((form.get("audio_offset") or b"0").decode()))
+        except (ValueError, AttributeError):
+            audio_offset = 0.0
+        try:
+            audio_start = max(0.0, float((form.get("audio_start") or b"0").decode()))
+        except (ValueError, AttributeError):
+            audio_start = 0.0
 
         with tempfile.TemporaryDirectory(prefix="flow-animation-") as temp:
             source = Path(temp) / "browser-recording"
-            output = Path(temp) / "flow-animation-resolve.mov"
-            source.write_bytes(self.rfile.read(length))
-            command = [
-                ffmpeg,
-                "-y",
-                "-i",
-                str(source),
-                "-an",
-                "-vf",
-                f"fps={fps},format=yuv422p10le",
-                "-c:v",
-                "prores_ks",
-                "-profile:v",
-                "3",
-                "-vendor",
-                "apl0",
-                str(output),
-            ]
+            source.write_bytes(video_data)
+
+            if fmt == "mp4":
+                output = Path(temp) / "flow-animation.mp4"
+                content_type = "video/mp4"
+                filename = "流程圖動畫.mp4"
+                video_flags = ["-vf", f"fps={fps},format=yuv420p", "-c:v", "libx264", "-preset", "fast"]
+            else:
+                output = Path(temp) / "flow-animation-resolve.mov"
+                content_type = "video/quicktime"
+                filename = "流程圖動畫-Resolve相容.mov"
+                video_flags = ["-vf", f"fps={fps},format=yuv422p10le", "-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"]
+
+            if audio_data:
+                audio_path = Path(temp) / "audio"
+                audio_path.write_bytes(audio_data)
+                audio_start_ms = int(audio_start * 1000)
+                command = [
+                    ffmpeg, "-y",
+                    "-i", str(source),
+                    "-ss", str(audio_offset), "-i", str(audio_path),
+                    "-filter_complex", f"[1:a]adelay={audio_start_ms}|{audio_start_ms}[a]",
+                    "-map", "0:v", "-map", "[a]",
+                    *video_flags,
+                    "-c:a", "aac", "-shortest",
+                    str(output),
+                ]
+            else:
+                command = [ffmpeg, "-y", "-i", str(source), "-an", *video_flags, str(output)]
+
             result = subprocess.run(command, capture_output=True, text=True, timeout=300)
             if result.returncode != 0 or not output.exists():
                 self.send_error(500, "ffmpeg conversion failed")
@@ -94,8 +119,9 @@ class Handler(SimpleHTTPRequestHandler):
             data = output.read_bytes()
 
         self.send_response(200)
-        self.send_header("Content-Type", "video/quicktime")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
